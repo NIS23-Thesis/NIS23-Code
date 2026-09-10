@@ -31,7 +31,7 @@ body:
     id: chapter
     attributes:
       label: Chapter
-      description: Add which chapter/subchapter in the paper this feature request is related to. If it requires multiple subchapters, it is best to create a separate feature request for each subchapter.
+      description: Add which chapter/subchapter in the paper this feature request is related to.
       placeholder: Enter the chapter/subchapter number (e.g., 1.1, 2.3, etc.)
     validations:
       required: false
