@@ -85,6 +85,7 @@ class ReliabilityManager:
         window_size=3,
         retry_count=0,
         max_retries=3,
+        max_window_size=8,
     ):
         key = (
             destination_address,
@@ -97,8 +98,9 @@ class ReliabilityManager:
             "window_start": 0,
             "window_size": window_size,
             "timeout": None,
-            "retry_count": 0,
-            "max_retries": 3,
+            "retry_count": retry_count,
+            "max_retries": max_retries,
+            "max_window_size": max_window_size,
         }
 
     def start_timeout(
@@ -322,7 +324,10 @@ class ReliabilityManager:
             if block in transfer["fragments"]
         ):
             transfer["window_start"] = window_end
-            transfer["window_size"] += 1
+            transfer["window_size"] = min(
+                transfer["window_size"] + 1,
+                transfer.get("max_window_size", transfer["window_size"] + 1),
+            )
 
     def process_ack(
         self,

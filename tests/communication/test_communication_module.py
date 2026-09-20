@@ -1,0 +1,177 @@
+import sys
+import time
+import unittest
+from pathlib import Path
+from typing import List, Optional, Tuple
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from flame.communication.communication_module import CommunicationModule
+from flame.communication.message import PacketType
+from flame.communication.parser import serialize_message
+
+
+class FakeSocketInterface:
+    """Records outbound sends and lets a test manually queue inbound datagrams."""
+
+    def __init__(self):
+        self.sent: List[Tuple[bytes, Tuple[str, int]]] = []
+        self._incoming: List[Tuple[bytes, Tuple[str, int]]] = []
+
+    def queue_incoming(self, raw_bytes: bytes, addr=("10.0.0.9", 12345)) -> None:
+        self._incoming.append((raw_bytes, addr))
+
+    def sendto(self, payload: bytes, address) -> int:
+        self.sent.append((payload, address))
+        return len(payload)
+
+    def recvfrom(self) -> Optional[Tuple[bytes, Tuple[str, int]]]:
+        if self._incoming:
+            return self._incoming.pop(0)
+        return None
+
+    def close(self) -> None:
+        pass
+
+
+def wait_until(predicate, timeout=1.0, interval=0.01):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(interval)
+    return predicate()
+
+
+class RoutingTests(unittest.TestCase):
+    def setUp(self):
+        self.socket = FakeSocketInterface()
+        self.module = CommunicationModule(self.socket, auto_start=True, poll_interval=0.01)
+
+    def tearDown(self):
+        self.module.stop()
+
+    def _hello_bytes(self):
+        return serialize_message({"packet_type": PacketType.HELLO, "role": 1, "sequence_number": 1, "model_id": 1})
+
+    def test_hello_routes_to_neighbor_buffer(self):
+        self.module.receive_datagram(self._hello_bytes())
+        self.assertTrue(wait_until(lambda: len(self.module.neighbor_buffer.items) == 1))
+        msg = self.module.pop_neighbor_messages()[0]
+        self.assertEqual(msg["packet_type"], PacketType.HELLO)
+
+    def test_sensor_data_routes_to_sensor_buffer(self):
+        raw = serialize_message({
+            "packet_type": PacketType.SENSOR_DATA, "role": 0, "sequence_number": 1,
+            "data_id": 1, "sensor_type": 1, "block_number": 0, "last_block_number": 0, "payload": b"x",
+        })
+        self.module.receive_datagram(raw)
+        self.assertTrue(wait_until(lambda: len(self.module.sensor_buffer.items) == 1))
+
+    def test_model_update_routes_to_fl_buffer(self):
+        raw = serialize_message({
+            "packet_type": PacketType.MODEL_UPDATE, "role": 1, "sequence_number": 1,
+            "update_id": 1, "model_id": 1, "block_number": 0, "last_block_number": 0, "payload": b"w",
+        })
+        self.module.receive_datagram(raw)
+        self.assertTrue(wait_until(lambda: len(self.module.fl_buffer.items) == 1))
+
+    def test_sensor_data_ack_routes_to_ack_buffer(self):
+        raw = serialize_message({
+            "packet_type": PacketType.SENSOR_DATA_ACK, "sequence_number": 1, "data_id": 1, "payload": b"",
+        })
+        self.module.receive_datagram(raw)
+        self.assertTrue(wait_until(lambda: len(self.module.ack_buffer.items) == 1))
+
+    def test_malformed_datagram_lands_in_receive_buffer_as_error(self):
+        self.module.receive_datagram(b"\x00\x00")  # too short for a header
+        self.assertTrue(wait_until(lambda: len(self.module.receive_buffer.items) == 1))
+        item = self.module.pop_received()[0]
+        self.assertEqual(item["type"], "error")
+
+    def test_route_handler_callback_is_invoked(self):
+        seen = []
+        module = CommunicationModule(FakeSocketInterface(), auto_start=True, poll_interval=0.01,
+                                      route_handler=lambda packet: seen.append(packet))
+        try:
+            module.receive_datagram(self._hello_bytes())
+            self.assertTrue(wait_until(lambda: len(seen) == 1))
+        finally:
+            module.stop()
+
+
+class SendMessageTests(unittest.TestCase):
+    def setUp(self):
+        self.socket = FakeSocketInterface()
+        self.module = CommunicationModule(self.socket, auto_start=False)
+
+    def test_send_message_with_explicit_destination(self):
+        self.module.send_message({"packet_type": PacketType.HELLO, "role": 1, "sequence_number": 1, "model_id": 1},
+                                  destination=("10.0.0.5", 9000))
+        self.assertEqual(len(self.socket.sent), 1)
+        payload, addr = self.socket.sent[0]
+        self.assertEqual(addr, ("10.0.0.5", 9000))
+        self.assertTrue(len(payload) >= 4)
+
+    def test_send_message_resolves_destination_from_dict(self):
+        self.module.send_message({
+            "packet_type": PacketType.HELLO, "role": 1, "sequence_number": 1, "model_id": 1,
+            "destination": ("10.0.0.6", 9001),
+        })
+        self.assertEqual(self.socket.sent[0][1], ("10.0.0.6", 9001))
+
+    def test_send_message_without_destination_raises(self):
+        with self.assertRaises(ValueError):
+            self.module.send_message({"packet_type": PacketType.HELLO, "role": 1, "sequence_number": 1,
+                                       "model_id": 1})
+
+
+class KnownGapTests(unittest.TestCase):
+    """
+    These tests document two integration gaps in the current wiring, rather
+    than bugs within any single file:
+
+    1. CommunicationModule now polls its socket automatically when started,
+       so real inbound traffic reaches the datagram buffer without a manual
+       `ingest_socket_once()` loop.
+
+    2. CommunicationModule now exposes a ReliabilityManager instance and
+       services timeout-based retransmission state in the background loop.
+    """
+
+    def test_socket_incoming_data_is_picked_up_automatically(self):
+        socket = FakeSocketInterface()
+        socket.queue_incoming(serialize_message(
+            {"packet_type": PacketType.HELLO, "role": 1, "sequence_number": 1, "model_id": 1}
+        ))
+        module = CommunicationModule(socket, auto_start=True, poll_interval=0.01)
+        try:
+            self.assertTrue(wait_until(lambda: len(module.neighbor_buffer.items) == 1))
+        finally:
+            module.stop()
+
+    def test_reliability_manager_is_referenced_by_communication_module(self):
+        import flame.communication.communication_module as cm_module
+        self.assertTrue(
+            hasattr(cm_module, "ReliabilityManager"),
+            "communication_module.py should import ReliabilityManager after the wiring fix.",
+        )
+
+    def test_ack_buffer_receives_acks_but_nothing_consumes_them(self):
+        socket = FakeSocketInterface()
+        module = CommunicationModule(socket, auto_start=True, poll_interval=0.01)
+        try:
+            raw = serialize_message({
+                "packet_type": PacketType.SENSOR_DATA_ACK, "sequence_number": 1, "data_id": 1, "payload": b"",
+            })
+            module.receive_datagram(raw)
+            self.assertTrue(wait_until(lambda: len(module.ack_buffer.items) == 1))
+            # nothing pops it back out on its own -- it just accumulates until something calls pop_ack_messages()
+            time.sleep(0.1)
+            self.assertEqual(len(module.ack_buffer.items), 1)
+        finally:
+            module.stop()
+
+
+if __name__ == "__main__":
+    unittest.main()
