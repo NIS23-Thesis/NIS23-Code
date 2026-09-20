@@ -1,3 +1,12 @@
+import time
+
+def prepare_fragments(fragments):
+    return {
+        block_number: fragment
+        for block_number, last_block_number, fragment
+        in fragments
+    }
+
 class ReliabilityManager:
 
     def __init__(self):
@@ -44,18 +53,6 @@ class ReliabilityManager:
 
         return fragment
 
-    def create_ack(
-        self,
-        packet_type,
-        message_id,
-        received_blocks
-    ):
-        return {
-            "packet_type": packet_type,
-            "message_id": message_id,
-            "received_blocks": sorted(received_blocks),
-        }
-
     def find_missing_blocks(self, received_blocks, last_block_number):
         expected_blocks = set(range(last_block_number + 1))
         received_blocks = set(received_blocks)
@@ -85,7 +82,9 @@ class ReliabilityManager:
         packet_type,
         message_id,
         fragments,
-        window_size=3
+        window_size=3,
+        retry_count=0,
+        max_retries=3,
     ):
         key = (
             destination_address,
@@ -97,8 +96,53 @@ class ReliabilityManager:
             "fragments": fragments,
             "window_start": 0,
             "window_size": window_size,
+            "timeout": None,
+            "retry_count": 0,
+            "max_retries": 3,
         }
 
+    def start_timeout(
+        self,
+        destination_address,
+        packet_type,
+        message_id
+    ):
+        key = (
+            destination_address,
+            packet_type,
+            message_id,
+        )
+
+        transfer = self.outbound_transfers.get(key)
+
+        if transfer is None:
+            return
+
+        transfer["timeout"] = time.time()
+
+    def is_timeout(
+        self,
+        destination_address,
+        packet_type,
+        message_id,
+        timeout_duration=1.0
+    ):
+        key = (
+            destination_address,
+            packet_type,
+            message_id,
+        )
+
+        transfer = self.outbound_transfers.get(key)
+
+        if transfer is None:
+            return False
+
+        if transfer["timeout"] is None:
+            return False
+
+        return time.time() - transfer["timeout"] >= timeout_duration
+    
     def get_fragment(
         self,
         destination_address,
@@ -136,6 +180,72 @@ class ReliabilityManager:
             for block_number in missing_blocks
         ]
 
+    def get_timeout_fragments(
+        self,
+        destination_address,
+        packet_type,
+        message_id
+    ):
+        window = self.get_current_window(
+            destination_address,
+            packet_type,
+            message_id,
+        )
+
+        return self.get_missing_fragments(
+            destination_address,
+            packet_type,
+            message_id,
+            window,
+        )
+
+    def process_timeout(
+        self,
+        destination_address,
+        packet_type,
+        message_id,
+        timeout_duration=1.0
+    ):
+        if not self.is_timeout(
+            destination_address,
+            packet_type,
+            message_id,
+            timeout_duration,
+        ):
+            return []
+
+        key = (
+            destination_address,
+            packet_type,
+            message_id,
+        )
+
+        transfer = self.outbound_transfers.get(key)
+
+        if transfer is None:
+            return []
+
+        transfer["retry_count"] += 1
+
+        if transfer["retry_count"] > transfer["max_retries"]:
+            del self.outbound_transfers[key]
+            return []
+
+        fragments = self.get_timeout_fragments(
+            destination_address,
+            packet_type,
+            message_id,
+        )
+
+        transfer["window_size"] = max(
+            1,
+            transfer["window_size"] // 2
+        )
+
+        transfer["timeout"] = time.time()
+
+        return fragments
+
     def get_current_window(
         self,
         destination_address,
@@ -162,6 +272,26 @@ class ReliabilityManager:
                 min(start + size, len(transfer["fragments"]))
             )
         )
+
+    def get_window_size(
+        self,
+        destination_address,
+        packet_type,
+        message_id
+    ):
+        key = (
+            destination_address,
+            packet_type,
+            message_id,
+        )
+
+        transfer = self.outbound_transfers.get(key)
+
+        if transfer is None:
+            return None
+
+        return transfer["window_size"]
+    
 
     def advance_window(
         self,
@@ -192,6 +322,7 @@ class ReliabilityManager:
             if block in transfer["fragments"]
         ):
             transfer["window_start"] = window_end
+            transfer["window_size"] += 1
 
     def process_ack(
         self,
@@ -201,7 +332,22 @@ class ReliabilityManager:
         received_blocks,
         missing_blocks
     ):
+
+        transfer = self.outbound_transfers.get(
+            (
+                destination_address,
+                packet_type,
+                message_id,
+            )
+        )
+        
         if missing_blocks:
+            if transfer is not None:
+                transfer["window_size"] = max(
+                    1,
+                    transfer["window_size"] // 2
+                )
+
             return {
                 "advanced": False,
                 "retransmit": missing_blocks,
@@ -213,6 +359,18 @@ class ReliabilityManager:
             message_id,
             received_blocks,
         )
+
+        key = (
+            destination_address,
+            packet_type,
+            message_id,
+        )
+
+        transfer = self.outbound_transfers.get(key)
+
+        if transfer is not None:
+            if transfer["window_start"] >= len(transfer["fragments"]):
+                del self.outbound_transfers[key]
 
         return {
             "advanced": True,
