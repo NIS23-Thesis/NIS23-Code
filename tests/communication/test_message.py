@@ -73,6 +73,12 @@ class HeaderTests(unittest.TestCase):
 
             parse_datagram(raw)
 
+    def test_rejects_nonzero_reserved_header_bits(self):
+        raw = bytearray(serialize_hello(version=1, role=1, sequence_number=1, model_id=1))
+        raw[1] |= 0x01
+        with self.assertRaises(ValueError):
+            deserialize_header(bytes(raw))
+
 
 class ControlPayloadTests(unittest.TestCase):
     def test_hello_round_trip(self):
@@ -124,6 +130,26 @@ class FragmentablePayloadTests(unittest.TestCase):
                 block_number=0, last_block_number=0, payload=b"x" * 1025,
             )
 
+    def test_sensor_data_rejects_block_after_last_block(self):
+        with self.assertRaises(ValueError):
+            serialize_sensor_data(
+                version=1, role=0, sequence_number=1, data_id=1, sensor_type=1,
+                block_number=2, last_block_number=1, payload=b"x",
+            )
+
+    def test_sensor_data_deserializer_rejects_oversized_wire_payload(self):
+        header = serialize_header(1, PacketType.SENSOR_DATA, 0, 1)
+        body = bytes([1, 1]) + (0).to_bytes(2, "big") + (0).to_bytes(2, "big")
+        with self.assertRaises(ValueError):
+            deserialize_sensor_data(header + body + (b"x" * 1025))
+
+    def test_sensor_data_rejects_invalid_identifier(self):
+        with self.assertRaises(ValueError):
+            serialize_sensor_data(
+                version=1, role=0, sequence_number=1, data_id=256, sensor_type=1,
+                block_number=0, last_block_number=0, payload=b"x",
+            )
+
     def test_model_update_round_trip(self):
         raw = serialize_model_update(
             version=1, role=1, sequence_number=50, update_id=3, model_id=5,
@@ -134,18 +160,45 @@ class FragmentablePayloadTests(unittest.TestCase):
         self.assertEqual(decoded["payload"], b"WEIGHTS")
 
     def test_sensor_data_ack_round_trip(self):
-        raw = serialize_sensor_data_ack(version=1, sequence_number=60, data_id=10, payload=b"ACK_DATA")
+        raw = serialize_sensor_data_ack(
+            version=1, sequence_number=60, data_id=10,
+            window_start=2, window_end=4, received_blocks=[2, 4],
+        )
         decoded = deserialize_sensor_data_ack(raw)
         self.assertEqual(decoded["data_id"], 10)
-        self.assertEqual(decoded["payload"], b"ACK_DATA")
+        self.assertEqual(decoded["window_start"], 2)
+        self.assertEqual(decoded["window_end"], 4)
+        self.assertEqual(decoded["received_blocks"], [2, 4])
 
     def test_model_update_ack_round_trip(self):
-        raw = serialize_model_update_ack(version=1, sequence_number=70, update_id=3, payload=b"ACK_DATA")
+        raw = serialize_model_update_ack(
+            version=1, sequence_number=70, update_id=3,
+            window_start=0, window_end=1, received_blocks=[0, 1],
+        )
         decoded = deserialize_model_update_ack(raw)
         self.assertEqual(decoded["update_id"], 3)
+        self.assertEqual(decoded["received_blocks"], [0, 1])
+
+    def test_ack_rejects_blocks_outside_window(self):
+        with self.assertRaises(ValueError):
+            serialize_sensor_data_ack(
+                version=1, sequence_number=1, data_id=1,
+                window_start=2, window_end=4, received_blocks=[1, 2],
+            )
+
+    def test_ack_rejects_malformed_count(self):
+        raw = serialize_sensor_data_ack(
+            version=1, sequence_number=1, data_id=1,
+            window_start=0, window_end=1, received_blocks=[0, 1],
+        )
+        with self.assertRaises(ValueError):
+            deserialize_sensor_data_ack(raw[:-1])
 
 
 class FragmentationAndReassemblyTests(unittest.TestCase):
+    def test_empty_payload_is_one_fragment(self):
+        self.assertEqual(fragment_payload(b""), [(0, 0, b"")])
+
     def test_fragments_cover_full_payload_in_order(self):
         payload = b"A" * 2500
         fragments = fragment_payload(payload)

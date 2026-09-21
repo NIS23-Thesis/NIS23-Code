@@ -33,7 +33,11 @@ def main() -> None:
     peer_address = parse_address(args.peer)
 
     socket_interface = SocketInterface(host=args.host, port=args.port)
-    comms = CommunicationModule(socket_interface=socket_interface, auto_start=True)
+    comms = CommunicationModule(
+        socket_interface=socket_interface,
+        role=args.role,
+        auto_start=True,
+    )
 
     print("Local address:", socket_interface.address)
     print("Peer address:", peer_address)
@@ -52,8 +56,6 @@ def main() -> None:
             "sequence_number": 1,
             "data_id": 1,
             "sensor_type": 1,
-            "block_number": 0,
-            "last_block_number": 0,
             "payload": args.message.encode("utf-8"),
         }
 
@@ -63,8 +65,6 @@ def main() -> None:
     deadline = time.time() + 10
     try:
         while time.time() < deadline:
-            comms.ingest_socket_once()
-
             neighbor = comms.pop_neighbor_messages()
             if neighbor:
                 print("Received neighbor packet:", neighbor[0])

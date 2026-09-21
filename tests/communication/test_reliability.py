@@ -1,181 +1,194 @@
 import sys
-import time
 import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from flame.communication.reliability import ReliabilityManager, prepare_fragments
-from flame.communication.message import fragment_payload
+from flame.communication.message import PacketType, fragment_payload
+from flame.communication.reliability import (
+    MIN_WINDOW_SIZE,
+    ReliabilityManager,
+    prepare_fragments,
+)
 
-DEST = "192.168.1.20"
-PTYPE = "SENSOR_DATA"
+
+DEST = ("127.0.0.1", 9000)
 
 
-def make_transfer(reliability, max_retries=3, window_size=3):
-    fragments = {
-        0: b"PACKET_BLOCK_0", 1: b"PACKET_BLOCK_1", 2: b"PACKET_BLOCK_2",
-        3: b"PACKET_BLOCK_3", 4: b"PACKET_BLOCK_4",
-    }
-    reliability.register_transfer(
-        destination_address=DEST, packet_type=PTYPE, message_id=10,
-        fragments=fragments, window_size=window_size, max_retries=max_retries,
+def fragments(count=5):
+    return {block: f"BLOCK_{block}".encode() for block in range(count)}
+
+
+def register(manager, *, count=5, sequence=10, retries=None):
+    kwargs = {} if retries is None else {"max_retries": retries}
+    key = manager.register_transfer(
+        DEST,
+        PacketType.SENSOR_DATA,
+        message_id=7,
+        sequence_number=sequence,
+        fragments=fragments(count),
+        **kwargs,
     )
-    return fragments
+    return key
 
 
-class DuplicateDetectionTests(unittest.TestCase):
-    def test_first_arrival_is_not_duplicate(self):
-        r = ReliabilityManager()
-        result = r.process_received_fragment(
-            source_address="10.0.0.1", packet_type=PTYPE, message_id=1, block_number=0,
-            fragment={"block_number": 0, "payload": b"X"},
+def sensor_fragment(block, last, sequence=10, data_id=7, payload=None):
+    return {
+        "version": 1,
+        "packet_type": PacketType.SENSOR_DATA,
+        "role": 0,
+        "sequence_number": sequence,
+        "data_id": data_id,
+        "sensor_type": 1,
+        "block_number": block,
+        "last_block_number": last,
+        "payload": payload if payload is not None else f"B{block}".encode(),
+    }
+
+
+class OutboundWindowTests(unittest.TestCase):
+    def test_initial_window_starts_at_two(self):
+        manager = ReliabilityManager()
+        key = register(manager)
+        action = manager.start_transfer(key, now=0.0)
+        self.assertEqual([block for block, _ in action.datagrams], [0, 1])
+        self.assertEqual((action.window_start, action.window_end), (0, 1))
+
+    def test_minimum_window_cannot_be_one(self):
+        with self.assertRaises(ValueError):
+            ReliabilityManager(initial_window_size=1, min_window_size=1)
+        self.assertEqual(MIN_WINDOW_SIZE, 2)
+
+    def test_full_ack_advances_and_additively_increases(self):
+        manager = ReliabilityManager()
+        key = register(manager)
+        manager.start_transfer(key, now=0.0)
+        action = manager.process_ack(
+            DEST, PacketType.SENSOR_DATA, 7, 10,
+            window_start=0, window_end=1, received_blocks=[0, 1], now=0.1,
         )
-        self.assertIsNotNone(result)
+        self.assertTrue(action.window_advanced)
+        self.assertEqual((action.window_start, action.window_end), (2, 4))
+        self.assertEqual([block for block, _ in action.datagrams], [2, 3, 4])
+        self.assertEqual(manager.get_outbound_transfer(key).window_size, 3)
 
-    def test_second_arrival_of_same_block_is_duplicate(self):
-        r = ReliabilityManager()
-        fragment = {"block_number": 0, "payload": b"X"}
-        r.process_received_fragment("10.0.0.1", PTYPE, 1, 0, fragment)
-        duplicate = r.process_received_fragment("10.0.0.1", PTYPE, 1, 0, fragment)
-        self.assertIsNone(duplicate)
+    def test_loss_keeps_current_bounds_and_retransmits_only_missing(self):
+        manager = ReliabilityManager()
+        key = register(manager)
+        manager.start_transfer(key, now=0.0)
+        action = manager.process_ack(
+            DEST, PacketType.SENSOR_DATA, 7, 10,
+            window_start=0, window_end=1, received_blocks=[0], now=0.1,
+        )
+        transfer = manager.get_outbound_transfer(key)
+        self.assertEqual((transfer.window_start, transfer.window_end), (0, 1))
+        self.assertEqual([block for block, _ in action.datagrams], [1])
+        self.assertEqual(transfer.reduced_window_size, 2)
 
-    def test_different_block_number_is_not_duplicate(self):
-        r = ReliabilityManager()
-        r.process_received_fragment("10.0.0.1", PTYPE, 1, 0, {"block_number": 0, "payload": b"X"})
-        result = r.process_received_fragment("10.0.0.1", PTYPE, 1, 1, {"block_number": 1, "payload": b"Y"})
-        self.assertIsNotNone(result)
+        next_action = manager.process_ack(
+            DEST, PacketType.SENSOR_DATA, 7, 10,
+            window_start=0, window_end=1, received_blocks=[0, 1], now=0.2,
+        )
+        self.assertEqual((next_action.window_start, next_action.window_end), (2, 3))
+        self.assertEqual(manager.get_outbound_transfer(key).window_size, 2)
 
+    def test_window_growth_is_capped(self):
+        manager = ReliabilityManager(initial_window_size=2, max_window_size=3)
+        key = register(manager, count=12)
+        manager.start_transfer(key, now=0.0)
+        manager.process_ack(DEST, PacketType.SENSOR_DATA, 7, 10, 0, 1, [0, 1], now=0.1)
+        self.assertEqual(manager.get_outbound_transfer(key).window_size, 3)
+        manager.process_ack(DEST, PacketType.SENSOR_DATA, 7, 10, 2, 4, [2, 3, 4], now=0.2)
+        self.assertEqual(manager.get_outbound_transfer(key).window_size, 3)
 
-class AckGenerationTests(unittest.TestCase):
-    def test_complete_ack_has_no_missing_blocks(self):
-        r = ReliabilityManager()
-        ack = r.create_ack(PTYPE, message_id=10, received_blocks={0, 1, 2}, last_block_number=2)
-        self.assertEqual(ack["missing_blocks"], [])
-
-    def test_ack_reports_missing_block(self):
-        r = ReliabilityManager()
-        ack = r.create_ack(PTYPE, message_id=10, received_blocks={0, 2}, last_block_number=2)
-        self.assertEqual(ack["missing_blocks"], [1])
-
-
-class WindowTests(unittest.TestCase):
-    def test_current_window_bounded_by_fragment_count(self):
-        r = ReliabilityManager()
-        make_transfer(r, window_size=3)
-        self.assertEqual(r.get_current_window(DEST, PTYPE, 10), [0, 1, 2])
-
-    def test_window_clamps_at_total_fragment_count(self):
-        r = ReliabilityManager()
-        make_transfer(r, window_size=10)  # bigger than the 5 available fragments
-        self.assertEqual(r.get_current_window(DEST, PTYPE, 10), [0, 1, 2, 3, 4])
-
-    def test_get_fragment_returns_none_for_unknown_block(self):
-        r = ReliabilityManager()
-        make_transfer(r)
-        self.assertIsNone(r.get_fragment(DEST, PTYPE, 10, 99))
-
-    def test_get_missing_fragments_looks_up_by_block_number(self):
-        r = ReliabilityManager()
-        make_transfer(r)
-        result = r.get_missing_fragments(DEST, PTYPE, 10, [1, 2])
-        self.assertEqual(result, [b"PACKET_BLOCK_1", b"PACKET_BLOCK_2"])
+    def test_final_ack_removes_transfer(self):
+        manager = ReliabilityManager()
+        key = register(manager, count=2)
+        manager.start_transfer(key, now=0.0)
+        action = manager.process_ack(
+            DEST, PacketType.SENSOR_DATA, 7, 10, 0, 1, [0, 1], now=0.1
+        )
+        self.assertTrue(action.completed)
+        self.assertFalse(manager.has_outbound_transfer(key))
 
 
-class AckProcessingAimdTests(unittest.TestCase):
-    def test_missing_ack_shrinks_window_and_does_not_advance(self):
-        r = ReliabilityManager()
-        make_transfer(r, window_size=3)
-        result = r.process_ack(DEST, PTYPE, 10, received_blocks={0, 2}, missing_blocks=[1])
-        self.assertEqual(result, {"advanced": False, "retransmit": [1]})
-        self.assertEqual(r.get_window_size(DEST, PTYPE, 10), 1)  # 3 // 2 = 1
-        self.assertEqual(r.get_current_window(DEST, PTYPE, 10), [0])  # window_start unchanged
+class TimeoutTests(unittest.TestCase):
+    def test_timeout_retransmits_only_unacknowledged_blocks(self):
+        manager = ReliabilityManager(ack_timeout=0.1, ack_delay=0.01)
+        key = register(manager)
+        manager.start_transfer(key, now=0.0)
+        manager.process_ack(
+            DEST, PacketType.SENSOR_DATA, 7, 10, 0, 1, [0], now=0.02
+        )
+        actions = manager.service_outbound(now=0.2)
+        self.assertEqual([block for block, _ in actions[0].datagrams], [1])
 
-    def test_full_ack_advances_window_and_grows_it(self):
-        r = ReliabilityManager()
-        make_transfer(r, window_size=3)
-        result = r.process_ack(DEST, PTYPE, 10, received_blocks={0, 1, 2}, missing_blocks=[])
-        self.assertEqual(result, {"advanced": True, "retransmit": []})
-        self.assertEqual(r.get_window_size(DEST, PTYPE, 10), 4)  # additive increase: 3 -> 4
-        self.assertEqual(r.get_current_window(DEST, PTYPE, 10), [3, 4])
-
-    def test_transfer_is_cleaned_up_once_all_blocks_acked(self):
-        r = ReliabilityManager()
-        make_transfer(r, window_size=5)  # window covers all 5 fragments at once
-        r.process_ack(DEST, PTYPE, 10, received_blocks={0, 1, 2, 3, 4}, missing_blocks=[])
-        self.assertNotIn((DEST, PTYPE, 10), r.outbound_transfers)
-
-    def test_KNOWN_GAP_window_size_has_no_upper_cap(self):
-        r = ReliabilityManager()
-        fragments = {i: f"BLOCK_{i}".encode() for i in range(200)}
-        r.register_transfer(DEST, PTYPE, 20, fragments, window_size=50)
-        for _ in range(10):
-            window = r.get_current_window(DEST, PTYPE, 20)
-            if not window:
-                break
-            r.process_ack(DEST, PTYPE, 20, received_blocks=set(window), missing_blocks=[])
-        transfer = r.outbound_transfers.get((DEST, PTYPE, 20))
-        if transfer is not None:
-            self.assertLessEqual(transfer["window_size"], transfer["max_window_size"])
+    def test_retry_exhaustion_fails_and_cleans_up(self):
+        manager = ReliabilityManager(
+            ack_timeout=0.1,
+            ack_delay=0.01,
+            max_retries=1,
+        )
+        key = register(manager, retries=1)
+        manager.start_transfer(key, now=0.0)
+        first = manager.service_outbound(now=0.2)[0]
+        self.assertFalse(first.failed)
+        second = manager.service_outbound(now=0.4)[0]
+        self.assertTrue(second.failed)
+        self.assertFalse(manager.has_outbound_transfer(key))
 
 
-class TimeoutAndRetryTests(unittest.TestCase):
-    def test_not_timed_out_immediately(self):
-        r = ReliabilityManager()
-        make_transfer(r)
-        r.start_timeout(DEST, PTYPE, 10)
-        self.assertFalse(r.is_timeout(DEST, PTYPE, 10, timeout_duration=0.2))
-
-    def test_times_out_after_duration_elapses(self):
-        r = ReliabilityManager()
-        make_transfer(r)
-        r.start_timeout(DEST, PTYPE, 10)
-        time.sleep(0.05)
-        self.assertTrue(r.is_timeout(DEST, PTYPE, 10, timeout_duration=0.02))
-
-    def test_process_timeout_halves_window_and_increments_retry(self):
-        r = ReliabilityManager()
-        make_transfer(r, window_size=4)
-        r.start_timeout(DEST, PTYPE, 10)
-        time.sleep(0.02)
-        fragments = r.process_timeout(DEST, PTYPE, 10, timeout_duration=0.01)
-        self.assertTrue(len(fragments) > 0)
-        self.assertEqual(r.get_window_size(DEST, PTYPE, 10), 2)  # 4 // 2
-        self.assertEqual(r.outbound_transfers[(DEST, PTYPE, 10)]["retry_count"], 1)
-
-    def test_transfer_removed_after_exceeding_max_retries(self):
-        r = ReliabilityManager()
-        make_transfer(r, max_retries=3)
-        key = (DEST, PTYPE, 10)
-        for _ in range(4):
-            r.outbound_transfers[key]["timeout"] = time.time() - 1
-            r.process_timeout(DEST, PTYPE, 10, timeout_duration=0.01)
-        self.assertNotIn(key, r.outbound_transfers)
-
-    def test_KNOWN_BUG_max_retries_argument_is_ignored(self):
-        r = ReliabilityManager()
-        make_transfer(r, max_retries=10)
-        key = (DEST, PTYPE, 10)
+class InboundTests(unittest.TestCase):
+    def test_out_of_order_window_is_accepted_and_reassembled(self):
+        manager = ReliabilityManager()
+        second = manager.receive_fragment(DEST, sensor_fragment(1, 1), now=0.0)
+        self.assertIsNone(second.complete_fragments)
+        first = manager.receive_fragment(DEST, sensor_fragment(0, 1), now=0.01)
+        self.assertEqual([a.received_blocks for a in first.acknowledgements], [(0, 1)])
         self.assertEqual(
-            r.outbound_transfers[key]["max_retries"], 10,
+            b"".join(fragment["payload"] for fragment in first.complete_fragments),
+            b"B0B1",
         )
-        for _ in range(10):
-            r.outbound_transfers[key]["timeout"] = time.time() - 1
-            r.process_timeout(DEST, PTYPE, 10, timeout_duration=0.01)
-        self.assertIn(key, r.outbound_transfers)
 
-        r.outbound_transfers[key]["timeout"] = time.time() - 1
-        r.process_timeout(DEST, PTYPE, 10, timeout_duration=0.01)
-        self.assertNotIn(key, r.outbound_transfers)
+    def test_partial_window_ack_lists_received_blocks(self):
+        manager = ReliabilityManager(ack_timeout=0.2, ack_delay=0.05)
+        manager.receive_fragment(DEST, sensor_fragment(0, 2), now=0.0)
+        pending = manager.service_inbound(now=0.06)
+        self.assertEqual(len(pending), 1)
+        _key, ack = pending[0]
+        self.assertEqual((ack.window_start, ack.window_end), (0, 1))
+        self.assertEqual(ack.received_blocks, (0,))
+
+    def test_duplicate_is_not_accepted_and_resends_ack(self):
+        manager = ReliabilityManager()
+        manager.receive_fragment(DEST, sensor_fragment(0, 1), now=0.0)
+        manager.receive_fragment(DEST, sensor_fragment(1, 1), now=0.01)
+        duplicate = manager.receive_fragment(DEST, sensor_fragment(0, 1), now=0.02)
+        self.assertTrue(duplicate.duplicate)
+        self.assertFalse(duplicate.accepted)
+        self.assertEqual(duplicate.acknowledgements[0].received_blocks, (0, 1))
+
+    def test_reused_identifier_with_new_sequence_is_new_transfer(self):
+        manager = ReliabilityManager(completed_retention=10.0)
+        first = manager.receive_fragment(DEST, sensor_fragment(0, 0, sequence=10), now=0.0)
+        second = manager.receive_fragment(DEST, sensor_fragment(0, 0, sequence=11), now=0.1)
+        self.assertIsNotNone(first.complete_fragments)
+        self.assertIsNotNone(second.complete_fragments)
+        self.assertFalse(second.duplicate)
+
+    def test_incomplete_reassembly_expires(self):
+        manager = ReliabilityManager(reassembly_timeout=0.1)
+        manager.receive_fragment(DEST, sensor_fragment(0, 2), now=0.0)
+        expired = manager.cleanup(now=0.2)
+        self.assertEqual(len(expired), 1)
+        self.assertEqual(manager.inbound_transfers, {})
 
 
-class FragmentIntegrationTests(unittest.TestCase):
+class FragmentHelperTests(unittest.TestCase):
     def test_prepare_fragments_keys_by_block_number(self):
-        payload = b"A" * 2500
-        fragments = fragment_payload(payload)
-        prepared = prepare_fragments(fragments)
-        self.assertEqual(sorted(prepared.keys()), [0, 1, 2])
-        self.assertEqual([len(v) for v in prepared.values()], [1024, 1024, 452])
+        prepared = prepare_fragments(fragment_payload(b"A" * 2500))
+        self.assertEqual(sorted(prepared), [0, 1, 2])
+        self.assertEqual([len(prepared[i]) for i in range(3)], [1024, 1024, 452])
 
 
 if __name__ == "__main__":

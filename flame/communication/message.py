@@ -2,6 +2,10 @@ from dataclasses import dataclass
 from enum import IntEnum
 
 
+MAX_FRAGMENT_PAYLOAD = 1024
+MAX_BLOCK_NUMBER = 0xFFFF
+
+
 class PacketType(IntEnum):
     HELLO = 0x00
     LEAVE = 0x01
@@ -65,7 +69,11 @@ def deserialize_header(data: bytes):
     version = (header >> 28) & 0x0F
     packet_type_value = (header >> 24) & 0x0F
     role = (header >> 23) & 0x01
+    reserved = (header >> 16) & 0x7F
     sequence_number = header & 0xFFFF
+
+    if reserved != 0:
+        raise ValueError("Reserved common-header bits must be zero.")
 
     try:
         packet_type = PacketType(packet_type_value)
@@ -199,8 +207,14 @@ def serialize_sensor_data(
     if not 0 <= last_block_number <= 0xFFFF:
         raise ValueError("Last Block Number must fit within 16 bits.")
 
-    if len(payload) > 1024:
-        raise ValueError("Sensor payload cannot exceed 1024 bytes.")
+    if block_number > last_block_number:
+        raise ValueError("Block Number cannot exceed Last Block Number.")
+
+    if not isinstance(payload, (bytes, bytearray)):
+        raise TypeError("Sensor payload must be bytes-like.")
+
+    if len(payload) > MAX_FRAGMENT_PAYLOAD:
+        raise ValueError(f"Sensor payload cannot exceed {MAX_FRAGMENT_PAYLOAD} bytes.")
 
     header = serialize_header(
         version=version,
@@ -241,8 +255,14 @@ def serialize_model_update(
     if not 0 <= last_block_number <= 0xFFFF:
         raise ValueError("Last Block Number must fit within 16 bits.")
 
-    if len(payload) > 1024:
-        raise ValueError("Model update payload cannot exceed 1024 bytes.")
+    if block_number > last_block_number:
+        raise ValueError("Block Number cannot exceed Last Block Number.")
+
+    if not isinstance(payload, (bytes, bytearray)):
+        raise TypeError("Model update payload must be bytes-like.")
+
+    if len(payload) > MAX_FRAGMENT_PAYLOAD:
+        raise ValueError(f"Model update payload cannot exceed {MAX_FRAGMENT_PAYLOAD} bytes.")
 
     header = serialize_header(
         version=version,
@@ -264,14 +284,20 @@ def serialize_sensor_data_ack(
     version: int,
     sequence_number: int,
     data_id: int,
-    payload: bytes = b""
+    window_start: int,
+    window_end: int,
+    received_blocks,
 ) -> bytes:
 
     if not 0 <= data_id <= 0xFF:
         raise ValueError("Data ID must fit within 8 bits.")
 
-    if len(payload) > 1024:
-        raise ValueError("ACK payload cannot exceed 1024 bytes.")
+    ack_body = _serialize_ack_body(
+        message_id=data_id,
+        window_start=window_start,
+        window_end=window_end,
+        received_blocks=received_blocks,
+    )
 
     header = serialize_header(
         version=version,
@@ -280,27 +306,26 @@ def serialize_sensor_data_ack(
         sequence_number=sequence_number,
     )
 
-    # Second 32-bit row:
-    # Data ID (1 byte) + 3 reserved bytes
-    packet_header = (
-        data_id.to_bytes(1, byteorder="big")
-        + b"\x00\x00\x00"
-    )
-
-    return header + packet_header + payload
+    return header + ack_body
 
 def serialize_model_update_ack(
     version: int,
     sequence_number: int,
     update_id: int,
-    payload: bytes = b""
+    window_start: int,
+    window_end: int,
+    received_blocks,
 ) -> bytes:
 
     if not 0 <= update_id <= 0xFF:
         raise ValueError("Update ID must fit within 8 bits.")
 
-    if len(payload) > 1024:
-        raise ValueError("ACK payload cannot exceed 1024 bytes.")
+    ack_body = _serialize_ack_body(
+        message_id=update_id,
+        window_start=window_start,
+        window_end=window_end,
+        received_blocks=received_blocks,
+    )
 
     header = serialize_header(
         version=version,
@@ -309,16 +334,46 @@ def serialize_model_update_ack(
         sequence_number=sequence_number,
     )
 
-    packet_header = (
-        update_id.to_bytes(1, byteorder="big")
-        + b"\x00\x00\x00"
+    return header + ack_body
+
+
+def _serialize_ack_body(message_id, window_start, window_end, received_blocks):
+    if not 0 <= message_id <= 0xFF:
+        raise ValueError("Message ID must fit within 8 bits.")
+    if not 0 <= window_start <= MAX_BLOCK_NUMBER:
+        raise ValueError("ACK window start must fit within 16 bits.")
+    if not 0 <= window_end <= MAX_BLOCK_NUMBER:
+        raise ValueError("ACK window end must fit within 16 bits.")
+    if window_start > window_end:
+        raise ValueError("ACK window start cannot exceed window end.")
+
+    blocks = list(received_blocks)
+    if blocks != sorted(set(blocks)):
+        raise ValueError("ACK received blocks must be unique and ascending.")
+    if len(blocks) > 0xFF:
+        raise ValueError("ACK cannot contain more than 255 block numbers.")
+    if any(not isinstance(block, int) or block < window_start or block > window_end for block in blocks):
+        raise ValueError("ACK block numbers must be inside the acknowledged window.")
+
+    return (
+        message_id.to_bytes(1, byteorder="big")
+        + window_start.to_bytes(2, byteorder="big")
+        + window_end.to_bytes(2, byteorder="big")
+        + len(blocks).to_bytes(1, byteorder="big")
+        + b"".join(block.to_bytes(2, byteorder="big") for block in blocks)
     )
 
-    return header + packet_header + payload
-
-def fragment_payload(payload: bytes, max_payload_size: int = 1024):
+def fragment_payload(payload: bytes, max_payload_size: int = MAX_FRAGMENT_PAYLOAD):
+    if not isinstance(payload, (bytes, bytearray)):
+        raise TypeError("Payload must be bytes-like.")
     if max_payload_size <= 0:
         raise ValueError("Maximum payload size must be greater than 0.")
+    if max_payload_size > MAX_FRAGMENT_PAYLOAD:
+        raise ValueError(f"Maximum payload size cannot exceed {MAX_FRAGMENT_PAYLOAD} bytes.")
+
+    payload = bytes(payload)
+    if not payload:
+        return [(0, 0, b"")]
 
     fragments = [
         payload[i:i + max_payload_size]
@@ -331,80 +386,6 @@ def fragment_payload(payload: bytes, max_payload_size: int = 1024):
         (block_number, last_block_number, fragment)
         for block_number, fragment in enumerate(fragments)
     ]
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 # FUNCTION: Raw 5-byte stream → deserialize_hello() → Usable HELLO data structure
 def deserialize_hello(data: bytes):
@@ -492,6 +473,8 @@ def deserialize_sensor_data(data: bytes):
         raise ValueError(
             "SENSOR_DATA packet must be at least 10 bytes."
         )
+    if len(data) > 10 + MAX_FRAGMENT_PAYLOAD:
+        raise ValueError("SENSOR_DATA payload exceeds the maximum fragment size.")
 
     header = deserialize_header(data)
 
@@ -503,6 +486,9 @@ def deserialize_sensor_data(data: bytes):
     block_number = int.from_bytes(data[6:8], byteorder="big")
     last_block_number = int.from_bytes(data[8:10], byteorder="big")
     payload = data[10:]
+
+    if block_number > last_block_number:
+        raise ValueError("Block Number cannot exceed Last Block Number.")
 
     return {
         **header,
@@ -518,6 +504,8 @@ def deserialize_model_update(data: bytes):
         raise ValueError(
             "MODEL_UPDATE packet must be at least 10 bytes."
         )
+    if len(data) > 10 + MAX_FRAGMENT_PAYLOAD:
+        raise ValueError("MODEL_UPDATE payload exceeds the maximum fragment size.")
 
     header = deserialize_header(data)
 
@@ -530,6 +518,9 @@ def deserialize_model_update(data: bytes):
     last_block_number = int.from_bytes(data[8:10], byteorder="big")
     payload = data[10:]
 
+    if block_number > last_block_number:
+        raise ValueError("Block Number cannot exceed Last Block Number.")
+
     return {
         **header,
         "update_id": update_id,
@@ -540,11 +531,6 @@ def deserialize_model_update(data: bytes):
     }
 
 def deserialize_sensor_data_ack(data: bytes):
-    if len(data) < 8:
-        raise ValueError(
-            "SENSOR_DATA_ACK packet must be at least 8 bytes."
-        )
-
     header = deserialize_header(data)
 
     if header["packet_type"] != PacketType.SENSOR_DATA_ACK:
@@ -552,21 +538,17 @@ def deserialize_sensor_data_ack(data: bytes):
             "Packet is not a SENSOR_DATA_ACK packet."
         )
 
-    data_id = data[4]
-    payload = data[8:]
+    ack = _deserialize_ack_body(data, "SENSOR_DATA_ACK")
 
     return {
         **header,
-        "data_id": data_id,
-        "payload": payload,
+        "data_id": ack["message_id"],
+        "window_start": ack["window_start"],
+        "window_end": ack["window_end"],
+        "received_blocks": ack["received_blocks"],
     }
 
 def deserialize_model_update_ack(data: bytes):
-    if len(data) < 8:
-        raise ValueError(
-            "MODEL_UPDATE_ACK packet must be at least 8 bytes."
-        )
-
     header = deserialize_header(data)
 
     if header["packet_type"] != PacketType.MODEL_UPDATE_ACK:
@@ -574,13 +556,48 @@ def deserialize_model_update_ack(data: bytes):
             "Packet is not a MODEL_UPDATE_ACK packet."
         )
 
-    update_id = data[4]
-    payload = data[8:]
+    ack = _deserialize_ack_body(data, "MODEL_UPDATE_ACK")
 
     return {
         **header,
-        "update_id": update_id,
-        "payload": payload,
+        "update_id": ack["message_id"],
+        "window_start": ack["window_start"],
+        "window_end": ack["window_end"],
+        "received_blocks": ack["received_blocks"],
+    }
+
+
+def _deserialize_ack_body(data: bytes, packet_name: str):
+    if len(data) < 10:
+        raise ValueError(f"{packet_name} packet must be at least 10 bytes.")
+
+    message_id = data[4]
+    window_start = int.from_bytes(data[5:7], byteorder="big")
+    window_end = int.from_bytes(data[7:9], byteorder="big")
+    received_count = data[9]
+    expected_length = 10 + (received_count * 2)
+
+    if len(data) != expected_length:
+        raise ValueError(
+            f"{packet_name} length does not match its received-block count."
+        )
+    if window_start > window_end:
+        raise ValueError(f"{packet_name} window start cannot exceed window end.")
+
+    received_blocks = [
+        int.from_bytes(data[offset:offset + 2], byteorder="big")
+        for offset in range(10, expected_length, 2)
+    ]
+    if received_blocks != sorted(set(received_blocks)):
+        raise ValueError(f"{packet_name} block numbers must be unique and ascending.")
+    if any(block < window_start or block > window_end for block in received_blocks):
+        raise ValueError(f"{packet_name} contains a block outside its window.")
+
+    return {
+        "message_id": message_id,
+        "window_start": window_start,
+        "window_end": window_end,
+        "received_blocks": received_blocks,
     }
 
 def reassemble_fragments(fragments):

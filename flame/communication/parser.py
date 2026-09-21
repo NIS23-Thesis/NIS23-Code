@@ -200,7 +200,9 @@ def serialize_message(message_obj: Any) -> bytes:
             version=version,
             sequence_number=sequence_number,
             data_id=_get_field(message_obj, "data_id", 0),
-            payload=_get_field(message_obj, "payload", b""),
+            window_start=_get_field(message_obj, "window_start"),
+            window_end=_get_field(message_obj, "window_end"),
+            received_blocks=_get_field(message_obj, "received_blocks", []),
         )
 
     if packet_type == PacketType.MODEL_UPDATE_ACK:
@@ -208,7 +210,9 @@ def serialize_message(message_obj: Any) -> bytes:
             version=version,
             sequence_number=sequence_number,
             update_id=_get_field(message_obj, "update_id", 0),
-            payload=_get_field(message_obj, "payload", b""),
+            window_start=_get_field(message_obj, "window_start"),
+            window_end=_get_field(message_obj, "window_end"),
+            received_blocks=_get_field(message_obj, "received_blocks", []),
         )
 
     raise ValueError(f"Unsupported packet type for serialization: {packet_type}")
