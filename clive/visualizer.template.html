@@ -1,0 +1,577 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CLIVE Emulation Visualizer</title>
+<style>
+:root{--bg:#0b1020;--panel:#121a2e;--panel2:#1a2340;--text:#e2e8f0;--muted:#8b98b5;--border:#24304f;--ch:#fbbf24;--sn:#38bdf8;--ok:#22c55e;--drop:#ef4444;--weak:#f97316;--med:#eab308}
+*{box-sizing:border-box}
+body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;background:radial-gradient(1200px 800px at 15% -10%,#172249 0%,var(--bg) 55%);color:var(--text);min-height:100vh}
+header{display:flex;align-items:center;gap:16px;padding:14px 24px;border-bottom:1px solid var(--border);background:rgba(9,13,28,.72);backdrop-filter:blur(8px);position:sticky;top:0;z-index:20;flex-wrap:wrap}
+.brand{display:flex;align-items:center;gap:12px}
+.logo{width:36px;height:36px;border-radius:10px;background:linear-gradient(135deg,var(--ch),var(--sn));display:grid;place-items:center;font-weight:800;color:#0b1020;font-size:15px;flex:0 0 auto}
+h1{font-size:18px;margin:0;letter-spacing:.3px}
+.sub{font-size:12px;color:var(--muted);margin:0}
+.pills{margin-left:auto;display:flex;gap:8px;flex-wrap:wrap}
+.pill{font-size:12px;padding:4px 11px;border-radius:999px;background:var(--panel2);border:1px solid var(--border);color:var(--muted);white-space:nowrap}
+.pill b{color:var(--text);font-weight:600}
+main{display:grid;grid-template-columns:minmax(0,1fr) 360px;gap:16px;padding:16px 24px 40px;max-width:1500px;margin:0 auto}
+.card{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:16px}
+.card h2{margin:0 0 12px;font-size:12px;text-transform:uppercase;letter-spacing:.8px;color:var(--muted);font-weight:700}
+.topology{grid-column:1/2;min-width:0}
+.side{grid-column:2/3;display:flex;flex-direction:column;gap:16px}
+.charts{grid-column:1/2}
+.events{grid-column:1/-1}
+.canvas-wrap{position:relative;width:100%;aspect-ratio:1/1;border-radius:10px;overflow:hidden;border:1px solid var(--border);background:#060a15}
+canvas{display:block;width:100%;height:100%;cursor:crosshair}
+.legend{display:flex;gap:14px;flex-wrap:wrap;margin-top:12px;font-size:12px;color:var(--muted)}
+.legend span{display:inline-flex;align-items:center;gap:6px}
+.dot{width:10px;height:10px;border-radius:50%;display:inline-block;flex:0 0 auto}
+.playbar{display:flex;align-items:center;gap:10px;margin-top:12px;flex-wrap:wrap}
+button{background:var(--panel2);border:1px solid var(--border);color:var(--text);padding:7px 12px;border-radius:8px;cursor:pointer;font-size:13px}
+button:hover{border-color:#3b4a77}
+button.primary{background:var(--sn);color:#04121f;border-color:transparent;font-weight:600}
+select,input[type=range]{background:var(--panel2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:6px 8px;font-size:13px}
+input[type=range]{flex:1;min-width:120px;accent-color:var(--sn)}
+label.check{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--muted);cursor:pointer}
+.hud{font-size:13px;color:var(--muted);font-variant-numeric:tabular-nums;white-space:nowrap}
+.hud b{color:var(--text)}
+.summary{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
+.stat{background:var(--panel2);border:1px solid var(--border);border-radius:10px;padding:10px 12px}
+.stat .v{font-size:20px;font-weight:700;font-variant-numeric:tabular-nums}
+.stat .k{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+.node-list{display:flex;flex-direction:column;gap:8px;max-height:520px;overflow:auto}
+.node-card{display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid var(--border);border-radius:10px;background:var(--panel2);cursor:pointer;transition:border-color .12s}
+.node-card:hover{border-color:#3b4a77}
+.node-card.active{border-color:var(--sn);box-shadow:0 0 0 1px var(--sn)}
+.role-badge{font-size:10px;padding:2px 7px;border-radius:999px;font-weight:700}
+.meter{margin-top:6px}
+.meter .bar{height:8px;border-radius:6px;background:#0c1226;overflow:hidden}
+.meter .fill{height:100%;border-radius:6px}
+.detail table{width:100%;font-size:12px;border-collapse:collapse}
+.detail td,.detail th{padding:4px 6px;text-align:left;border-bottom:1px solid var(--border);vertical-align:top}
+.detail th{color:var(--muted);font-weight:600;white-space:nowrap}
+.chart-group{display:flex;align-items:flex-end;gap:4px;height:210px;overflow-x:auto;padding-bottom:4px}
+.chart-group .g{display:flex;flex-direction:column;align-items:center;flex:1;min-width:34px;gap:2px}
+.bars{display:flex;align-items:flex-end;gap:2px;height:170px;width:100%;justify-content:center}
+.bars .b{width:8px;border-radius:3px 3px 0 0}
+.xlabel{font-size:10px;color:var(--muted);white-space:nowrap}
+.ptable-wrap{max-height:360px;overflow:auto;border:1px solid var(--border);border-radius:10px}
+table.ptable{width:100%;font-size:12px;border-collapse:collapse}
+table.ptable th{position:sticky;top:0;background:var(--panel2);z-index:1}
+table.ptable td,table.ptable th{padding:6px 8px;text-align:left;border-bottom:1px solid var(--border)}
+.filters{display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap}
+.badge{font-size:10px;padding:2px 7px;border-radius:999px;font-weight:700;white-space:nowrap}
+.b-send{background:rgba(34,197,94,.15);color:var(--ok)}
+.b-recv{background:rgba(56,189,248,.15);color:var(--sn)}
+.b-drop{background:rgba(239,68,68,.15);color:var(--drop)}
+.hint{font-size:12px;color:var(--muted)}
+@media(max-width:1000px){main{grid-template-columns:1fr}.side{grid-column:1/2}}
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">
+    <div class="logo">C</div>
+    <div>
+      <h1>CLIVE Emulation Visualizer</h1>
+      <p class="sub">Clustered wireless sensor network · traffic &amp; link quality</p>
+    </div>
+  </div>
+  <div class="pills" id="scenario-pills"></div>
+</header>
+
+<main>
+  <section class="card topology">
+    <h2>Network topology · 200 × 200 m</h2>
+    <div class="canvas-wrap"><canvas id="topo"></canvas></div>
+    <div class="legend">
+      <span><i class="dot" style="background:var(--ch)"></i> Cluster head (CH)</span>
+      <span><i class="dot" style="background:var(--sn)"></i> Sensor node (SN)</span>
+      <span style="color:var(--ok)">— strong</span>
+      <span style="color:var(--med)">— medium</span>
+      <span style="color:var(--weak)">— weak</span>
+      <span style="color:#475569">- - unreachable</span>
+      <span><i class="dot" style="background:var(--ok)"></i> delivered</span>
+      <span><i class="dot" style="background:var(--drop)"></i> dropped</span>
+    </div>
+    <div class="playbar">
+      <button id="playBtn" class="primary">▶ Play</button>
+      <button id="stepBack" title="step back">⏮</button>
+      <button id="stepFwd" title="step forward">⏭</button>
+      <input type="range" id="scrub" min="0" max="100" step="1" value="0">
+      <div class="hud">tick <b id="tickVal">0</b> · t = <b id="timeVal">0.0</b> s</div>
+      <select id="speedSel">
+        <option value="0.25">0.25×</option>
+        <option value="0.5">0.5×</option>
+        <option value="1" selected>1×</option>
+        <option value="2">2×</option>
+        <option value="4">4×</option>
+      </select>
+      <label class="check"><input type="checkbox" id="allLinks" checked> show unreachable links</label>
+    </div>
+  </section>
+
+  <aside class="side">
+    <section class="card">
+      <h2>Summary</h2>
+      <div class="summary" id="summary"></div>
+    </section>
+    <section class="card">
+      <h2>Nodes</h2>
+      <div class="node-list" id="nodeList"></div>
+    </section>
+    <section class="card detail" id="nodeDetail">
+      <h2>Selected node</h2>
+      <p class="hint" id="detailEmpty">Click a node on the map or in the list to inspect it.</p>
+      <div id="detailBody" style="display:none"></div>
+    </section>
+  </aside>
+
+  <section class="card charts">
+    <h2>Traffic per second (all nodes)</h2>
+    <div id="trafficChart"></div>
+  </section>
+
+  <section class="card events">
+    <h2>Message log</h2>
+    <div class="filters">
+      <select id="evNode"><option value="">All nodes</option></select>
+      <select id="evType">
+        <option value="">All types</option>
+        <option value="send">send</option>
+        <option value="receive">receive</option>
+      </select>
+      <select id="evStatus">
+        <option value="">All outcomes</option>
+        <option value="ok">delivered</option>
+        <option value="drop">dropped</option>
+      </select>
+    </div>
+    <div class="ptable-wrap">
+      <table class="ptable">
+        <thead><tr><th>tick</th><th>node</th><th>type</th><th>peer</th><th>outcome</th><th>message</th></tr></thead>
+        <tbody id="evBody"></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+<script>
+const CLIVE_DATA = /*__CLIVE_DATA__*/null;
+(function () {
+  'use strict';
+  const DATA = CLIVE_DATA;
+  if (!DATA) {
+    document.body.innerHTML = '<div style="padding:40px;font-family:sans-serif;color:#e2e8f0;background:#0b1020;min-height:100vh"><h2>No data embedded</h2><p>This is a template. Run <code>build_visualizer.py</code> to produce <code>visualizer.html</code> with the emulation data embedded.</p></div>';
+    return;
+  }
+  const PLAN = DATA.plan, METRICS = DATA.metrics || {}, EVENTS = DATA.events || {};
+  const NODES = PLAN.nodes, TRACE = PLAN.trace, LINK = PLAN.link_config, MOB = PLAN.mobility_config, CFG = PLAN.config;
+  const TICK_DT = MOB.tick_interval, DURATION = CFG.duration_s, AREA_W = MOB.area_width_m, AREA_H = MOB.area_height_m;
+  const NODE_NAMES = NODES.map(n => n.name);
+  const BY_NAME = {}, IP_TO_NAME = {};
+  NODES.forEach(n => { BY_NAME[n.name] = n; IP_TO_NAME[n.overlay_ip] = n.name; });
+  const TICKS = Object.keys(TRACE).map(Number).sort((a, b) => a - b);
+  const LAST_TICK = TICKS.length ? TICKS[TICKS.length - 1] : 0;
+
+  const ROLE = {
+    0: { label: 'Sensor node', short: 'SN', color: '#38bdf8' },
+    1: { label: 'Cluster head', short: 'CH', color: '#fbbf24' },
+  };
+
+  // Link model (mirrors nodesocket.py link_conditions + RSSI_BANDS)
+  const BANDS = [
+    { lo: null, hi: -85, bw: 0.0, plr: 1.0, reachable: false },
+    { lo: -85, hi: -75, bw: 0.2, plr: 0.1, reachable: true },
+    { lo: -75, hi: -65, bw: 0.44, plr: 0.02, reachable: true },
+    { lo: -65, hi: null, bw: 1.0, plr: 0.0, reachable: true },
+  ];
+  const BAND_COLOR = { strong: '#22c55e', medium: '#eab308', weak: '#f97316', none: '#475569' };
+  function linkConditions(d) {
+    if (!Number.isFinite(d)) return { reachable: false, bw: 0, plr: 1, rssi: null };
+    const rssi = LINK.rssi0_dbm - 10 * LINK.pathloss_exponent * Math.log10(Math.max(d, 1e-6) / LINK.d0_m);
+    for (const b of BANDS) {
+      if ((b.lo === null || rssi > b.lo) && (b.hi === null || rssi <= b.hi))
+        return { reachable: b.reachable, bw: LINK.max_data_rate_bps * b.bw, plr: b.plr, rssi };
+    }
+    return { reachable: false, bw: 0, plr: 1, rssi };
+  }
+  function bandOf(rssi) {
+    if (rssi == null) return 'none';
+    if (rssi > -65) return 'strong';
+    if (rssi > -75) return 'medium';
+    if (rssi > -85) return 'weak';
+    return 'none';
+  }
+  function distBetween(a, b, tick) {
+    const t = TRACE[String(tick)];
+    const A = t && t[a.name], B = t && t[b.name];
+    if (!A || !B) return Infinity;
+    return Math.hypot(B[0] - A[0], B[1] - A[1]);
+  }
+
+  // Aggregate protocol events by tick
+  const sendsByTick = {}, recvsByTick = {};
+  NODE_NAMES.forEach(name => {
+    (EVENTS[name] || []).forEach(ev => {
+      if (!ev) return;
+      if (ev.type === 'send') (sendsByTick[ev.tick] ||= []).push({ from: name, to: ev.destination, sent: !!ev.sent });
+      else if (ev.type === 'receive') {
+        const src = IP_TO_NAME[(ev.source || [])[0]] || 'unknown';
+        const m = (ev.data || '').match(/AT TICK (\d+)/);
+        const t = m ? Number(m[1]) : null;
+        (recvsByTick[t] ||= []).push({ to: name, from: src, data: ev.data || '' });
+      }
+    });
+  });
+
+  // State
+  let playing = false, speed = 1, simTime = 0, selected = null, showAllLinks = true;
+  let pulses = [], lastEmitTick = -1;
+  const PULSE_DUR = 0.55;
+
+  // Canvas
+  const canvas = document.getElementById('topo');
+  const ctx = canvas.getContext('2d');
+  let W = 0, H = 0, PAD = 46;
+  function resize() {
+    const dpr = window.devicePixelRatio || 1;
+    const size = canvas.clientWidth || 600;
+    canvas.width = Math.round(size * dpr);
+    canvas.height = Math.round(size * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    W = size; H = size;
+  }
+  window.addEventListener('resize', resize);
+
+  function posOf(node, tick) {
+    const t = TRACE[String(tick)];
+    const p = t && t[node.name];
+    return p || [AREA_W / 2, AREA_H / 2];
+  }
+  function toXY(x, y) {
+    return { x: PAD + (x / AREA_W) * (W - 2 * PAD), y: PAD + (y / AREA_H) * (H - 2 * PAD) };
+  }
+  function currentTick() { return Math.min(Math.floor(simTime / TICK_DT), LAST_TICK); }
+
+  function drawGrid() {
+    ctx.clearRect(0, 0, W, H);
+    ctx.strokeStyle = 'rgba(148,163,184,.08)';
+    ctx.fillStyle = 'rgba(148,163,184,.55)';
+    ctx.font = '10px sans-serif';
+    for (let g = 0; g <= AREA_W; g += 50) {
+      const a = toXY(g, 0), b = toXY(g, AREA_H);
+      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+      ctx.textAlign = 'center'; ctx.fillText(g + 'm', a.x, PAD - 12);
+      const c = toXY(0, g), d = toXY(AREA_W, g);
+      ctx.beginPath(); ctx.moveTo(c.x, c.y); ctx.lineTo(d.x, d.y); ctx.stroke();
+      ctx.textAlign = 'right'; ctx.fillText(g + 'm', PAD - 10, c.y + 3);
+    }
+  }
+
+  function drawLinks() {
+    const tick = currentTick();
+    for (let i = 0; i < NODES.length; i++) {
+      for (let j = i + 1; j < NODES.length; j++) {
+        const a = NODES[i], b = NODES[j];
+        const c = linkConditions(distBetween(a, b, tick));
+        const band = bandOf(c.rssi);
+        const pa = toXY(...posOf(a, tick)), pb = toXY(...posOf(b, tick));
+        const isSel = selected && (a.name === selected || b.name === selected);
+        const alpha = selected ? (isSel ? 1 : 0.1) : 1;
+        ctx.beginPath();
+        ctx.moveTo(pa.x, pa.y);
+        ctx.lineTo(pb.x, pb.y);
+        if (c.reachable) {
+          ctx.strokeStyle = BAND_COLOR[band];
+          ctx.globalAlpha = alpha;
+          ctx.lineWidth = band === 'strong' ? 2.4 : band === 'medium' ? 1.7 : 1.1;
+          ctx.stroke();
+        } else if (showAllLinks) {
+          ctx.setLineDash([3, 4]);
+          ctx.strokeStyle = BAND_COLOR.none;
+          ctx.globalAlpha = alpha * 0.5;
+          ctx.lineWidth = 1;
+          ctx.stroke();
+          ctx.setLineDash([]);
+        }
+        ctx.globalAlpha = 1;
+      }
+    }
+  }
+
+  function drawPulses() {
+    const tick = currentTick();
+    for (const p of pulses) {
+      const prog = (simTime - p.start) / PULSE_DUR;
+      if (prog < 0 || prog > 1) continue;
+      const pa = toXY(...posOf(p.from, tick)), pb = toXY(...posOf(p.to, tick));
+      const x = pa.x + (pb.x - pa.x) * prog;
+      const y = pa.y + (pb.y - pa.y) * prog;
+      ctx.strokeStyle = p.sent ? 'rgba(34,197,94,.25)' : 'rgba(239,68,68,.25)';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.moveTo(pa.x, pa.y); ctx.lineTo(x, y); ctx.stroke();
+      ctx.fillStyle = p.sent ? '#22c55e' : '#ef4444';
+      ctx.beginPath(); ctx.arc(x, y, 4, 0, Math.PI * 2); ctx.fill();
+    }
+  }
+
+  function drawNode(n, tick) {
+    const p = toXY(...posOf(n, tick));
+    const role = ROLE[n.role] || ROLE[0];
+    const isSel = selected === n.name;
+    ctx.fillStyle = role.color;
+    ctx.strokeStyle = 'rgba(0,0,0,.35)';
+    ctx.lineWidth = 1.5;
+    if (n.role === 1) {
+      const r = 11;
+      ctx.beginPath();
+      ctx.moveTo(p.x, p.y - r); ctx.lineTo(p.x + r, p.y); ctx.lineTo(p.x, p.y + r); ctx.lineTo(p.x - r, p.y);
+      ctx.closePath(); ctx.fill(); ctx.stroke();
+    } else {
+      ctx.beginPath(); ctx.arc(p.x, p.y, 10, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    }
+    if (isSel) {
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(p.x, p.y, 16, 0, Math.PI * 2); ctx.stroke();
+    }
+    ctx.fillStyle = '#e2e8f0'; ctx.font = '600 11px sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText(n.name, p.x, p.y + 28);
+  }
+
+  function draw() {
+    drawGrid();
+    drawLinks();
+    drawPulses();
+    NODES.forEach(n => drawNode(n, currentTick()));
+  }
+
+  // ---- DOM refs ----
+  const $ = id => document.getElementById(id);
+  const playBtn = $('playBtn'), scrub = $('scrub'), speedSel = $('speedSel'), allLinks = $('allLinks');
+  const tickVal = $('tickVal'), timeVal = $('timeVal');
+
+  function updateHud() {
+    const t = currentTick();
+    tickVal.textContent = t;
+    timeVal.textContent = (t * TICK_DT).toFixed(1);
+    scrub.value = t;
+  }
+  function setPlay(v) {
+    playing = v;
+    playBtn.textContent = playing ? '❚❚ Pause' : '▶ Play';
+    playBtn.classList.toggle('primary', !playing);
+  }
+  playBtn.addEventListener('click', () => setPlay(!playing));
+  speedSel.addEventListener('change', () => { speed = parseFloat(speedSel.value); });
+  allLinks.addEventListener('change', () => { showAllLinks = allLinks.checked; });
+  function resetTo(t) {
+    simTime = t; pulses = []; lastEmitTick = -1; emitPulses(); draw(); updateHud();
+  }
+  scrub.addEventListener('input', () => resetTo(Number(scrub.value) * TICK_DT));
+  $('stepBack').addEventListener('click', () => resetTo(Math.max(0, simTime - TICK_DT)));
+  $('stepFwd').addEventListener('click', () => resetTo(Math.min(DURATION, simTime + TICK_DT)));
+
+  function emitPulses() {
+    const tick = currentTick();
+    if (tick === lastEmitTick) return;
+    lastEmitTick = tick;
+    (sendsByTick[tick] || []).forEach(s => {
+      const a = BY_NAME[s.from], b = BY_NAME[s.to];
+      if (a && b) pulses.push({ from: a, to: b, sent: s.sent, start: simTime });
+    });
+  }
+
+  function selectNode(name) {
+    selected = (selected === name) ? null : name;
+    document.querySelectorAll('.node-card').forEach(el => el.classList.toggle('active', el.dataset.name === selected));
+    renderNodeDetail();
+    draw();
+  }
+
+  canvas.addEventListener('click', e => {
+    const rect = canvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+    let best = null, bestD = 18;
+    NODES.forEach(n => {
+      const p = toXY(...posOf(n, currentTick()));
+      const dd = Math.hypot(p.x - mx, p.y - my);
+      if (dd < bestD) { bestD = dd; best = n.name; }
+    });
+    if (best) selectNode(best);
+  });
+
+  // ---- summary ----
+  function renderSummary() {
+    let sent = 0, recv = 0, drop = 0, bits = 0, eTx = 0;
+    NODE_NAMES.forEach(n => {
+      const m = METRICS[n] || {};
+      sent += m.packets_sent || 0; recv += m.packets_received || 0; drop += m.packets_dropped || 0;
+      bits += m.bits_sent || 0; eTx += m.energy_sent_j || 0;
+    });
+    const ratio = sent ? (recv / sent * 100).toFixed(1) : '0';
+    [['packets sent', sent], ['packets received', recv], ['packets dropped', drop],
+     ['delivery ratio', ratio + '%'], ['bits sent', fmtBits(bits)], ['energy (Tx)', eTx.toExponential(2) + ' J']]
+      .forEach(([k, v]) => {
+        const d = document.createElement('div'); d.className = 'stat';
+        d.innerHTML = '<div class="v">' + v + '</div><div class="k">' + k + '</div>';
+        $('summary').appendChild(d);
+      });
+  }
+  function fmtBits(b) {
+    return b >= 1e6 ? (b / 1e6).toFixed(2) + ' Mb' : b >= 1e3 ? (b / 1e3).toFixed(1) + ' kb' : b + ' b';
+  }
+
+  // ---- node list ----
+  function renderNodeList() {
+    $('nodeList').innerHTML = NODES.map(n => {
+      const m = METRICS[n.name] || {};
+      const role = ROLE[n.role] || ROLE[0];
+      const recvPct = Math.min(100, ((m.packets_received || 0) / Math.max(1, m.packets_sent || 80)) * 100).toFixed(0);
+      return '<div class="node-card" data-name="' + n.name + '">' +
+        '<i class="dot" style="background:' + role.color + '"></i>' +
+        '<div style="flex:1;min-width:0">' +
+          '<div style="font-weight:600">' + n.name + ' <span class="role-badge" style="background:' + role.color + '22;color:' + role.color + '">' + role.short + '</span></div>' +
+          '<div class="meter"><div class="bar"><div class="fill" style="width:' + recvPct + '%;background:var(--sn)"></div></div></div>' +
+        '</div>' +
+        '<div style="font-size:11px;color:var(--muted);text-align:right;white-space:nowrap"><div>' + (m.packets_received || 0) + ' recv</div><div>' + (m.packets_dropped || 0) + ' drop</div></div>' +
+      '</div>';
+    }).join('');
+    document.querySelectorAll('.node-card').forEach(el => el.addEventListener('click', () => selectNode(el.dataset.name)));
+  }
+
+  // ---- node detail ----
+  function renderNodeDetail() {
+    const box = $('detailBody'), empty = $('detailEmpty');
+    if (!selected) { box.style.display = 'none'; empty.style.display = ''; return; }
+    empty.style.display = 'none'; box.style.display = '';
+    const n = BY_NAME[selected], m = METRICS[selected] || {}, role = ROLE[n.role] || ROLE[0];
+    const rows = (m.packet_log || []).slice(-30).map(e => {
+      const peer = e.direction === 'send' ? (IP_TO_NAME[(e.destination || [])[0]] || e.destination) : (IP_TO_NAME[(e.source || [])[0]] || e.source);
+      const status = e.direction === 'receive' ? '<span class="badge b-recv">received</span>' : (e.sent ? '<span class="badge b-send">delivered</span>' : '<span class="badge b-drop">dropped</span>');
+      const dist = e.distance_m != null ? e.distance_m.toFixed(1) + ' m' : '—';
+      return '<tr><td>' + e.direction + '</td><td>' + esc(peer) + '</td><td>' + status + '</td><td>' + dist + '</td><td>' + (e.bits || '') + '</td></tr>';
+    }).join('');
+    box.innerHTML =
+      '<table>' +
+        '<tr><th>role</th><td>' + role.label + '</td></tr>' +
+        '<tr><th>overlay</th><td>' + n.overlay_ip + ':' + n.overlay_port + '</td></tr>' +
+        '<tr><th>sent</th><td>' + (m.packets_sent || 0) + ' packets · ' + fmtBits(m.bits_sent || 0) + '</td></tr>' +
+        '<tr><th>received</th><td>' + (m.packets_received || 0) + ' packets · ' + fmtBits(m.bits_received || 0) + '</td></tr>' +
+        '<tr><th>dropped</th><td>' + (m.packets_dropped || 0) + '</td></tr>' +
+        '<tr><th>energy (Tx)</th><td>' + (m.energy_sent_j || 0).toExponential(3) + ' J</td></tr>' +
+      '</table>' +
+      '<h2 style="margin-top:14px">Recent activity</h2>' +
+      '<div class="ptable-wrap" style="max-height:220px"><table class="ptable">' +
+        '<thead><tr><th>dir</th><th>peer</th><th>outcome</th><th>dist</th><th>bits</th></tr></thead>' +
+        '<tbody>' + (rows || '<tr><td colspan="5">no packet log</td></tr>') + '</tbody>' +
+      '</table></div>';
+  }
+
+  // ---- traffic chart ----
+  function renderTrafficChart() {
+    const rounds = [];
+    for (let t = 0; t <= LAST_TICK; t += 10) rounds.push(t);
+    const data = rounds.map(t => {
+      const s = sendsByTick[t] || [], r = recvsByTick[t] || [];
+      return { t, attempted: s.length, delivered: s.filter(x => x.sent).length, dropped: s.filter(x => !x.sent).length, received: r.length };
+    });
+    const max = Math.max(1, ...data.map(d => Math.max(d.attempted, d.received)));
+    const series = [['attempted', '#64748b'], ['delivered', '#22c55e'], ['dropped', '#ef4444'], ['received', '#38bdf8']];
+    $('trafficChart').innerHTML = '<div class="chart-group">' + data.map(d => {
+      const bars = series.map(([k, c]) => '<div class="b" style="height:' + (d[k] / max * 100).toFixed(1) + '%;background:' + c + '" title="' + k + ': ' + d[k] + '"></div>').join('');
+      return '<div class="g"><div class="bars">' + bars + '</div><div class="xlabel">' + (d.t / 10 + 1) + 's</div></div>';
+    }).join('') + '</div>';
+  }
+
+  // ---- event log ----
+  function flattenEvents() {
+    const out = [];
+    NODE_NAMES.forEach(node => {
+      (EVENTS[node] || []).forEach(ev => {
+        if (!ev) return;
+        if (ev.type === 'send') out.push({ tick: ev.tick, node, type: 'send', peer: ev.destination, ok: !!ev.sent, msg: '' });
+        else if (ev.type === 'receive') {
+          const src = IP_TO_NAME[(ev.source || [])[0]] || 'unknown';
+          const m = (ev.data || '').match(/AT TICK (\d+)/);
+          out.push({ tick: m ? Number(m[1]) : null, node, type: 'receive', peer: src, ok: true, msg: ev.data || '' });
+        }
+      });
+    });
+    out.sort((a, b) => (a.tick == null ? 0 : a.tick) - (b.tick == null ? 0 : b.tick) || a.node.localeCompare(b.node));
+    return out;
+  }
+  const ALL_EVENTS = flattenEvents();
+  function renderEventLog() {
+    const nodeF = $('evNode').value, typeF = $('evType').value, statusF = $('evStatus').value;
+    const rows = ALL_EVENTS.filter(e => {
+      if (nodeF && e.node !== nodeF) return false;
+      if (typeF && e.type !== typeF) return false;
+      if (statusF === 'ok' && !e.ok) return false;
+      if (statusF === 'drop' && e.ok) return false;
+      return true;
+    });
+    $('evBody').innerHTML = rows.slice(0, 400).map(e => {
+      const status = e.type === 'receive' ? '<span class="badge b-recv">received</span>' : (e.ok ? '<span class="badge b-send">delivered</span>' : '<span class="badge b-drop">dropped</span>');
+      return '<tr><td>' + (e.tick == null ? '—' : e.tick) + '</td><td>' + e.node + '</td><td>' + e.type + '</td><td>' + e.peer + '</td><td>' + status + '</td><td style="color:var(--muted)">' + esc(e.msg) + '</td></tr>';
+    }).join('') || '<tr><td colspan="6">no events match</td></tr>';
+  }
+  function esc(s) {
+    return String(s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+  }
+
+  // ---- scenario pills ----
+  function renderPills() {
+    const ch = NODES.filter(n => n.role === 1).length, sn = NODES.filter(n => n.role === 0).length;
+    [['cluster heads', ch], ['sensor nodes', sn], ['duration', DURATION + ' s'],
+     ['area', AREA_W + '×' + AREA_H + ' m'], ['seed', CFG.seed], ['tick', TICK_DT + ' s']]
+      .forEach(([k, v]) => {
+        const s = document.createElement('span'); s.className = 'pill';
+        s.innerHTML = k + ': <b>' + v + '</b>';
+        $('scenario-pills').appendChild(s);
+      });
+  }
+
+  // ---- filters ----
+  function renderFilters() {
+    $('evNode').innerHTML = '<option value="">All nodes</option>' + NODE_NAMES.map(n => '<option value="' + n + '">' + n + '</option>').join('');
+    $('evNode').addEventListener('change', renderEventLog);
+    $('evType').addEventListener('change', renderEventLog);
+    $('evStatus').addEventListener('change', renderEventLog);
+  }
+
+  // ---- main loop ----
+  let lastTs = null;
+  function frame(ts) {
+    if (lastTs == null) lastTs = ts;
+    const dt = Math.min(0.05, (ts - lastTs) / 1000);
+    lastTs = ts;
+    if (playing) {
+      simTime += dt * speed;
+      if (simTime >= DURATION) { simTime = DURATION; setPlay(false); }
+      emitPulses();
+    }
+    draw();
+    updateHud();
+    requestAnimationFrame(frame);
+  }
+
+  // init
+  resize();
+  scrub.max = LAST_TICK;
+  renderPills();
+  renderSummary();
+  renderNodeList();
+  renderTrafficChart();
+  renderFilters();
+  renderEventLog();
+  renderNodeDetail();
+  emitPulses();
+  draw();
+  updateHud();
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
