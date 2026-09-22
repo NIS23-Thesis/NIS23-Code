@@ -121,6 +121,11 @@ class CommunicationModule:
         self._sequence_lock = threading.Lock()
         self._next_sequence = 0
 
+        # # Debugging hooks for testing purposes
+        # self.drop_block_number = None
+        # self.drop_message_id = None
+        # self.drop_once = False
+
         if auto_start:
             self.start()
 
@@ -498,6 +503,21 @@ class CommunicationModule:
             )
 
         for block_number, raw in action.datagrams:
+            # # Simulate packet loss for testing purposes
+            # if (
+            #     self.drop_once
+            #     and block_number == self.drop_block_number
+            #     and action.key.message_id == self.drop_message_id
+            # ):
+            #     print(
+            #         f"[SIMULATED LOSS] Dropped "
+            #         f"{action.key.packet_type.name} "
+            #         f"id={action.key.message_id} "
+            #         f"block={block_number}"
+            #     )
+            #     self.drop_once = False
+            #     continue
+
             self._send_raw(raw, action.key.peer_address)
             self._emit(
                 "fragment_sent",
