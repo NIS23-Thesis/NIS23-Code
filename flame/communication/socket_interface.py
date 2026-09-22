@@ -18,12 +18,13 @@ class SocketInterface:
 
     @property
     def address(self) -> Tuple[str, int]:
-        return self.socket.getsockname()
+        return self.socket.getsockname() # Return the socket host and port.
 
     def sendto(self, payload: bytes, address: Tuple[str, int]) -> int:
-        return self.socket.sendto(payload, address)
+        return self.socket.sendto(payload, address) # Send bytes to a UDP address.
 
     def recvfrom(self, max_bytes: int = 4096) -> Optional[Tuple[bytes, Tuple[str, int]]]:
+        # Receive one datagram or return None on timeout.
         try:
             return self.socket.recvfrom(max_bytes)
         except socket.timeout:

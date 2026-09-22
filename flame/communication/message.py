@@ -1,3 +1,11 @@
+'''
+message.py handles all the packet types and their 
+serialization/deserialization for the FLAME protocol.
+It defines the common packet header, specific packet structures, and provides
+functions to encode and decode each packet type. The module also includes utilities 
+for fragmenting payloads and reassembling them from received fragments.
+'''
+
 from dataclasses import dataclass
 from enum import IntEnum
 
@@ -25,6 +33,7 @@ class Message:
     payload: bytes
 
 class LeaveReason(IntEnum):
+    '''List the reasons a device may leave.'''
     NORMAL_DISCONNECTION = 0x00
     LOW_BATTERY = 0x01
     MOBILITY_OUT_OF_RANGE = 0x02
@@ -40,6 +49,7 @@ def serialize_header(
     role: int,
     sequence_number: int
 ) -> bytes:
+    '''Encode the common packet header.'''
 
     if not 0 <= version <= 0x0F:
         raise ValueError("Version must fit within 4 bits.")
@@ -61,6 +71,7 @@ def serialize_header(
 
 
 def deserialize_header(data: bytes):
+    '''Decode and validate the common packet header.'''
     if len(data) < 4:
         raise ValueError("Datagram is too short for a common header.")
 
@@ -95,6 +106,7 @@ def serialize_hello(
     sequence_number: int,
     model_id: int
 ) -> bytes:
+    '''Encode a HELLO packet.'''
 
     if not 0 <= model_id <= 0xFF:
         raise ValueError("Model ID must fit within 8 bits.")
@@ -115,6 +127,7 @@ def serialize_join(
     model_id: int,
     join_id: int
 ) -> bytes:
+    '''Encode a JOIN packet.'''
 
     if not 0 <= model_id <= 0xFF:
         raise ValueError("Model ID must fit within 8 bits.")
@@ -144,6 +157,7 @@ def serialize_join_accept(
     timeout: int,
     rejected: int
 ) -> bytes:
+    '''Encode a JOIN_ACCEPT packet.'''
 
     if not 0 <= join_id <= 0xFFFF:
         raise ValueError("Join ID must fit within 16 bits.")
@@ -174,6 +188,7 @@ def serialize_leave(
     sequence_number: int,
     reason: LeaveReason
 ) -> bytes:
+    '''Encode a LEAVE packet.'''
 
     header = serialize_header(
         version=version,
@@ -194,6 +209,7 @@ def serialize_sensor_data(
     last_block_number: int,
     payload: bytes
 ) -> bytes:
+    '''Encode one sensor data fragment.'''
 
     if not 0 <= data_id <= 0xFF:
         raise ValueError("Data ID must fit within 8 bits.")
@@ -242,6 +258,7 @@ def serialize_model_update(
     last_block_number: int,
     payload: bytes
 ) -> bytes:
+    '''Encode one model update fragment.'''
 
     if not 0 <= update_id <= 0xFF:
         raise ValueError("Update ID must fit within 8 bits.")
@@ -288,6 +305,7 @@ def serialize_sensor_data_ack(
     window_end: int,
     received_blocks,
 ) -> bytes:
+    '''Encode a sensor data acknowledgement.'''
 
     if not 0 <= data_id <= 0xFF:
         raise ValueError("Data ID must fit within 8 bits.")
@@ -316,6 +334,7 @@ def serialize_model_update_ack(
     window_end: int,
     received_blocks,
 ) -> bytes:
+    '''Encode a model update acknowledgement.'''
 
     if not 0 <= update_id <= 0xFF:
         raise ValueError("Update ID must fit within 8 bits.")
@@ -338,6 +357,7 @@ def serialize_model_update_ack(
 
 
 def _serialize_ack_body(message_id, window_start, window_end, received_blocks):
+    '''Encode the shared acknowledgement fields.'''
     if not 0 <= message_id <= 0xFF:
         raise ValueError("Message ID must fit within 8 bits.")
     if not 0 <= window_start <= MAX_BLOCK_NUMBER:
@@ -364,6 +384,7 @@ def _serialize_ack_body(message_id, window_start, window_end, received_blocks):
     )
 
 def fragment_payload(payload: bytes, max_payload_size: int = MAX_FRAGMENT_PAYLOAD):
+    '''Split a payload into numbered fragments.'''
     if not isinstance(payload, (bytes, bytearray)):
         raise TypeError("Payload must be bytes-like.")
     if max_payload_size <= 0:
@@ -389,6 +410,7 @@ def fragment_payload(payload: bytes, max_payload_size: int = MAX_FRAGMENT_PAYLOA
 
 # FUNCTION: Raw 5-byte stream → deserialize_hello() → Usable HELLO data structure
 def deserialize_hello(data: bytes):
+    '''Decode a HELLO packet.'''
     if len(data) != 5:
         raise ValueError("HELLO packet must be exactly 5 bytes.")
 
@@ -405,6 +427,7 @@ def deserialize_hello(data: bytes):
     }
 
 def deserialize_join(data: bytes):
+    '''Decode a JOIN packet.'''
     if len(data) != 7:
         raise ValueError("JOIN packet must be exactly 7 bytes.")
 
@@ -423,6 +446,7 @@ def deserialize_join(data: bytes):
     }
 
 def deserialize_join_accept(data: bytes):
+    '''Decode a JOIN_ACCEPT packet.'''
     if len(data) != 7:
         raise ValueError("JOIN_ACCEPT packet must be exactly 7 bytes.")
 
@@ -446,6 +470,7 @@ def deserialize_join_accept(data: bytes):
     }
 
 def deserialize_leave(data: bytes):
+    '''Decode a LEAVE packet.'''
     if len(data) != 5:
         raise ValueError("LEAVE packet must be exactly 5 bytes.")
 
@@ -469,6 +494,7 @@ def deserialize_leave(data: bytes):
     }
 
 def deserialize_sensor_data(data: bytes):
+    '''Decode one sensor data fragment.'''
     if len(data) < 10:
         raise ValueError(
             "SENSOR_DATA packet must be at least 10 bytes."
@@ -500,6 +526,7 @@ def deserialize_sensor_data(data: bytes):
     }
 
 def deserialize_model_update(data: bytes):
+    '''Decode one model update fragment.'''
     if len(data) < 10:
         raise ValueError(
             "MODEL_UPDATE packet must be at least 10 bytes."
@@ -531,6 +558,7 @@ def deserialize_model_update(data: bytes):
     }
 
 def deserialize_sensor_data_ack(data: bytes):
+    '''Decode a sensor data acknowledgement.'''
     header = deserialize_header(data)
 
     if header["packet_type"] != PacketType.SENSOR_DATA_ACK:
@@ -549,6 +577,7 @@ def deserialize_sensor_data_ack(data: bytes):
     }
 
 def deserialize_model_update_ack(data: bytes):
+    '''Decode a model update acknowledgement.'''
     header = deserialize_header(data)
 
     if header["packet_type"] != PacketType.MODEL_UPDATE_ACK:
@@ -568,6 +597,7 @@ def deserialize_model_update_ack(data: bytes):
 
 
 def _deserialize_ack_body(data: bytes, packet_name: str):
+    '''Decode the shared acknowledgement fields.'''
     if len(data) < 10:
         raise ValueError(f"{packet_name} packet must be at least 10 bytes.")
 
@@ -601,6 +631,7 @@ def _deserialize_ack_body(data: bytes, packet_name: str):
     }
 
 def reassemble_fragments(fragments):
+    '''Check and join all fragments in order.'''
     if not fragments:
         raise ValueError("No fragments provided.")
 

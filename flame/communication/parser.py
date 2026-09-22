@@ -1,10 +1,14 @@
-# flame/communication/parser.py
+"""
+Parser for the FLAME protocol.
+The parser validates the protocol version, role, and packet type, and decodes the payload accordingly.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
 try:
+    # From message.py
     from message import (
         PacketType,
         LeaveReason,
@@ -63,7 +67,7 @@ ROLE_RESTRICTIONS = {
     PacketType.MODEL_UPDATE_ACK: {1},
 }
 
-
+# Hold a validated packet and its decoded data.
 @dataclass
 class ParsedPacket:
     packet_type: PacketType
@@ -73,7 +77,7 @@ class ParsedPacket:
     payload: Dict[str, Any]
     raw: bytes
 
-
+# Validate and decode a raw datagram into a ParsedPacket.
 def parse_datagram(raw_bytes: bytes, expected_version: int = EXPECTED_VERSION) -> ParsedPacket:
     header = deserialize_header(raw_bytes)
 
@@ -119,13 +123,13 @@ def parse_datagram(raw_bytes: bytes, expected_version: int = EXPECTED_VERSION) -
         raw=raw_bytes,
     )
 
-
+# Read a field from a dictionary or object.
 def _get_field(message_obj: Any, key: str, default: Any = None) -> Any:
     if isinstance(message_obj, dict):
         return message_obj.get(key, default)
     return getattr(message_obj, key, default)
 
-
+# Encode a message object into bytes based on its packet type.
 def serialize_message(message_obj: Any) -> bytes:
     packet_type = _get_field(message_obj, "packet_type")
     version = _get_field(message_obj, "version", EXPECTED_VERSION)
