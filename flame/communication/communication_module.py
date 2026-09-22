@@ -1,3 +1,11 @@
+'''
+The Communication Module is responsible for handling the serialization, 
+reliability, UDP I/O, and delivery of messages in the FLAME framework. 
+It provides a thread-safe interface for sending and receiving messages, 
+managing reliability through acknowledgements and retransmissions,
+and routing messages to appropriate handlers or buffers.
+'''
+
 from __future__ import annotations
 
 import threading
@@ -19,6 +27,7 @@ except ImportError:
 
 Address = Tuple[str, int]
 
+#Packet Types
 RECEIVER_ROLE_RESTRICTIONS = {
     PacketType.HELLO: {0, 1},
     PacketType.JOIN: {1},
@@ -30,38 +39,43 @@ RECEIVER_ROLE_RESTRICTIONS = {
     PacketType.MODEL_UPDATE_ACK: {1},
 }
 
-
+# Thread-safe FIFO buffer for received messages at the application layer.
 class ReceiveBuffer:
-    """Small thread-safe FIFO used at the application boundary."""
 
+    #Constructor
     def __init__(self) -> None:
+        '''Create an empty thread-safe queue.'''
         self._items: Deque[dict] = deque()
         self._lock = threading.Lock()
 
+    # Return a copy of all queued items.
     @property
     def items(self) -> List[dict]:
         with self._lock:
             return list(self._items)
 
+    # Append Items to the Queue
     def put(self, item: dict) -> None:
         with self._lock:
             self._items.append(item)
 
+    # Remove and return all the items in the queue
     def get_all(self) -> List[dict]:
         with self._lock:
             items = list(self._items)
             self._items.clear()
             return items
 
+    # Return the number of items in the queue
     def __len__(self) -> int:
         with self._lock:
             return len(self._items)
 
-
+# Main Communication Module Class: serialization, reliability, UDP I/O, and delivery
 class CommunicationModule:
-    """Coordinates FLAME serialization, reliability, UDP I/O, and delivery."""
 
-    def __init__(
+    # Omega initialization
+    def __init__(   
         self,
         socket_interface: Any,
         *,
@@ -124,6 +138,7 @@ class CommunicationModule:
         if auto_start:
             self.start()
 
+    # Start the background communication thread.
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
             return
@@ -135,17 +150,20 @@ class CommunicationModule:
         )
         self._thread.start()
 
+    # Stops the background communication thread.
     def stop(self) -> None:
         self._stop_event.set()
         if self._thread and self._thread is not threading.current_thread():
             self._thread.join(timeout=1.0)
 
+    # Return the next 16-bit sequence number.
     def _allocate_sequence(self) -> int:
         with self._sequence_lock:
             sequence = self._next_sequence
             self._next_sequence = (self._next_sequence + 1) & 0xFFFF
             return sequence
 
+    # Converts the message object to a dictionary, ensuring it has the required fields
     @staticmethod
     def _as_dict(message_obj: Any) -> Dict[str, Any]:
         if isinstance(message_obj, dict):
@@ -162,7 +180,8 @@ class CommunicationModule:
         if isinstance(value, str):
             return PacketType[value]
         return PacketType(value)
-
+    
+    # Check that a role may send the packet type.
     def _validate_outgoing_role(self, packet_type: PacketType, role: int) -> None:
         if role not in ROLE_RESTRICTIONS.get(packet_type, {0, 1}):
             raise ValueError(f"role {role} is not permitted to send {packet_type.name}")
@@ -171,7 +190,9 @@ class CommunicationModule:
                 f"Message role {role} does not match CommunicationModule role {self.role}."
             )
 
+    
     @staticmethod
+    # Check that a destination is valid.
     def _validate_destination(destination: Address) -> Address:
         if (
             not isinstance(destination, tuple)
@@ -188,6 +209,7 @@ class CommunicationModule:
         message_obj: Any,
         destination: Optional[Address] = None,
     ) -> bytes:
+        '''Validate, encode, and send one message.'''
         packet = self._as_dict(message_obj)
         if "packet_type" not in packet:
             raise ValueError("Message requires a packet_type.")
@@ -229,6 +251,7 @@ class CommunicationModule:
         )
         return raw
 
+    # Send a reliable message, fragmenting if necessary, and manage the transfer state.
     def _send_reliable_message(self, packet: Dict[str, Any], destination: Address) -> bytes:
         packet_type = packet["packet_type"]
         id_field = "data_id" if packet_type == PacketType.SENSOR_DATA else "update_id"
@@ -270,6 +293,7 @@ class CommunicationModule:
         self._handle_transmission_action(action)
         return prepared[0]
 
+    # Send raw bytes to a destination.
     def _send_raw(self, raw: bytes, destination: Address) -> None:
         with self._send_lock:
             self.socket_interface.sendto(raw, destination)
@@ -279,9 +303,11 @@ class CommunicationModule:
         raw_bytes: bytes,
         source_address: Optional[Address] = None,
     ) -> None:
+        # Queue a received datagram for processing.
         self.datagram_buffer.put(raw_bytes, source_address)
 
     def ingest_socket_once(self) -> bool:
+        # Read one datagram from the socket and queue it for processing.
         if (
             self.poll_socket
             and self._thread
@@ -299,6 +325,7 @@ class CommunicationModule:
         return True
 
     def _drain_loop(self) -> None:
+        # Process incoming data and reliability tasks until stopped.
         while not self._stop_event.is_set():
             did_work = False
             try:
@@ -316,6 +343,7 @@ class CommunicationModule:
                 time.sleep(self.poll_interval)
 
     def _drain_once(self) -> bool:
+        # Parse and handle all queued datagrams.
         did_work = False
         while True:
             item = self.datagram_buffer.get()
@@ -339,6 +367,7 @@ class CommunicationModule:
         packet: dict,
         source_address: Optional[Address],
     ) -> None:
+        # Validate the packet and route it to the appropriate handler or buffer.
         packet_type = packet["packet_type"]
         if (
             self.role is not None
@@ -364,6 +393,7 @@ class CommunicationModule:
         self._deliver(packet)
 
     def _consume_reliable_fragment(self, packet: dict, source_address: Address) -> None:
+        # Store a received fragment and handle reassembly, acknowledgements, and delivery.
         with self._state_lock:
             result = self.reliability_manager.receive_fragment(source_address, packet)
 
@@ -397,6 +427,7 @@ class CommunicationModule:
         )
         self._deliver(complete)
 
+    # Build and send an acknowledgement packet.
     def _send_ack(self, key: TransferKey, ack: AckInfo) -> None:
         if key.packet_type == PacketType.SENSOR_DATA:
             packet_type = PacketType.SENSOR_DATA_ACK
@@ -428,6 +459,7 @@ class CommunicationModule:
             destination=key.peer_address,
         )
 
+    # Acknowledgement handling: update reliability state and emit events.
     def _consume_ack(self, packet: dict, source_address: Address) -> None:
         ack_type = packet["packet_type"]
         if ack_type == PacketType.SENSOR_DATA_ACK:
@@ -464,6 +496,9 @@ class CommunicationModule:
         self._handle_transmission_action(action)
 
     def _handle_transmission_action(self, action: TransmissionAction) -> None:
+        # Handle the result of a reliability transmission action, sending fragments or emitting events as needed.
+        
+        # when action is failed, emit transfer_failed event
         if action.failed:
             self._emit(
                 "transfer_failed",
@@ -474,6 +509,8 @@ class CommunicationModule:
                 reason=action.reason,
             )
             return
+
+        # when action is completed, emit transfer_complete event
         if action.completed:
             self._emit(
                 "transfer_complete",
@@ -486,6 +523,7 @@ class CommunicationModule:
         if not action.datagrams:
             return
 
+        # when action has window advanced, emit window_advanced event
         if action.window_advanced:
             self._emit(
                 "window_advanced",
@@ -512,6 +550,7 @@ class CommunicationModule:
             )
 
     def _service_reliability(self) -> bool:
+        # Handle retries, delayed ACKs, and expired transfers.
         with self._state_lock:
             outbound_actions = self.reliability_manager.service_outbound()
             pending_acks = self.reliability_manager.service_inbound()
@@ -532,6 +571,7 @@ class CommunicationModule:
         return bool(outbound_actions or pending_acks or expired)
 
     def _deliver(self, packet: dict) -> None:
+        # Place a packet in its receive queues and notify handlers.
         self.receive_buffer.put(packet)
         packet_type = packet["packet_type"]
         if packet_type in (
@@ -561,6 +601,7 @@ class CommunicationModule:
         raw: bytes,
         source_address: Optional[Address] = None,
     ) -> None:
+        # Save a datagram error and emit an error event.
         item = {
             "type": "error",
             "error": error,
@@ -571,17 +612,18 @@ class CommunicationModule:
         self._emit("datagram_error", error=error, source=source_address)
 
     def _emit(self, event_type: str, **fields: Any) -> None:
+        # Save an event and send it to the event handler.
         event = {"type": event_type, **fields}
         self.event_buffer.put(event)
         if self.event_handler is not None:
             try:
                 self.event_handler(event)
             except Exception:
-                # Observability must not break protocol progress.
                 pass
 
     @staticmethod
     def _resolve_destination(message_obj: Any) -> Optional[Address]:
+        # Read the destination address from a message.
         if isinstance(message_obj, dict):
             return message_obj.get("destination") or message_obj.get("destination_address")
         return getattr(message_obj, "destination", None) or getattr(
@@ -591,22 +633,29 @@ class CommunicationModule:
         )
 
     def pop_received(self) -> List[dict]:
+        # Remove and return all received messages.
         return self.receive_buffer.get_all()
 
     def pop_neighbor_messages(self) -> List[dict]:
+        # Remove and return all neighbor messages.
         return self.neighbor_buffer.get_all()
 
     def pop_sensor_messages(self) -> List[dict]:
+        # Remove and return all sensor messages.
         return self.sensor_buffer.get_all()
 
     def pop_fl_messages(self) -> List[dict]:
+        # Remove and return all model update messages.
         return self.fl_buffer.get_all()
 
     def pop_ack_messages(self) -> List[dict]:
+        # Remove and return all acknowledgement messages.
         return self.ack_buffer.get_all()
 
     def pop_errors(self) -> List[dict]:
+        # Remove and return all recorded errors.
         return self.error_buffer.get_all()
 
     def pop_events(self) -> List[dict]:
+        # Remove and return all communication events.
         return self.event_buffer.get_all()

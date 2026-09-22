@@ -23,15 +23,16 @@ DEFAULT_MAX_RETRIES = 3
 
 
 def prepare_fragments(fragments):
-    """Index `(block, last_block, payload)` tuples by block number."""
+    # Index (block, last_block, payload) 
     return {
         block_number: fragment
         for block_number, _last_block_number, fragment in fragments
-    }
+    }   
 
 
 @dataclass(frozen=True)
 class TransferKey:
+    # Identify one transfer between two peers.
     peer_address: Address
     packet_type: PacketType
     message_id: int
@@ -40,6 +41,7 @@ class TransferKey:
 
 @dataclass(frozen=True)
 class AckInfo:
+    # Store the fields needed for an acknowledgement.
     message_id: int
     sequence_number: int
     window_start: int
@@ -49,6 +51,7 @@ class AckInfo:
 
 @dataclass
 class TransmissionAction:
+    # Describe data the sender should send next.
     key: TransferKey
     reason: str
     datagrams: List[Tuple[int, bytes]] = field(default_factory=list)
@@ -61,6 +64,7 @@ class TransmissionAction:
 
 @dataclass
 class InboundResult:
+    # Describe the result of receiving one fragment.
     key: TransferKey
     accepted: bool
     duplicate: bool = False
@@ -70,6 +74,7 @@ class InboundResult:
 
 @dataclass
 class OutboundTransfer:
+    # Track the state of an outgoing transfer.
     key: TransferKey
     fragments: Dict[int, bytes]
     window_start: int
@@ -87,14 +92,17 @@ class OutboundTransfer:
 
     @property
     def last_block_number(self) -> int:
+        # Return the final fragment number.
         return len(self.fragments) - 1
 
     def current_blocks(self) -> List[int]:
+        # Return the block numbers in the current window.
         return list(range(self.window_start, self.window_end + 1))
 
 
 @dataclass
 class InboundTransfer:
+    # Track the state of an incoming transfer.
     key: TransferKey
     last_block_number: int
     metadata_value: int
@@ -112,18 +120,20 @@ class InboundTransfer:
     ack_history: Dict[Tuple[int, int], AckInfo] = field(default_factory=dict)
 
     def current_blocks(self) -> List[int]:
+        # Return the block numbers in the current window.
         return list(range(self.window_start, self.window_end + 1))
 
 
 @dataclass
 class CompletedInboundTransfer:
+    # Keep ACK data for a recently completed transfer.
     expires_at: float
     ack_history: Dict[Tuple[int, int], AckInfo]
 
 
 class ReliabilityManager:
-    """Own reliable-transfer state without performing socket I/O."""
 
+    # omega initialization lol
     def __init__(
         self,
         *,
@@ -136,6 +146,7 @@ class ReliabilityManager:
         completed_retention: float = DEFAULT_COMPLETED_RETENTION,
         max_retries: int = DEFAULT_MAX_RETRIES,
     ) -> None:
+        # Set up reliable transfer limits and state.
         if min_window_size < 2:
             raise ValueError("FLAME's minimum window size is 2.")
         if not min_window_size <= initial_window_size <= max_window_size:
@@ -168,6 +179,7 @@ class ReliabilityManager:
 
     @staticmethod
     def _packet_type(packet_type) -> PacketType:
+        # Convert a value to a packet type.
         if isinstance(packet_type, PacketType):
             return packet_type
         if isinstance(packet_type, str):
@@ -175,6 +187,7 @@ class ReliabilityManager:
         return PacketType(packet_type)
 
     @classmethod
+    # Create a transfer key for a given transfer.
     def make_key(
         cls,
         peer_address: Address,
@@ -200,6 +213,7 @@ class ReliabilityManager:
         window_size: Optional[int] = None,
         max_retries: Optional[int] = None,
     ) -> TransferKey:
+        # Validate and store a new outgoing transfer.
         packet_type = self._packet_type(packet_type)
         if packet_type not in (PacketType.SENSOR_DATA, PacketType.MODEL_UPDATE):
             raise ValueError("Only SENSOR_DATA and MODEL_UPDATE are reliable transfers.")
@@ -233,6 +247,7 @@ class ReliabilityManager:
         return key
 
     def start_transfer(self, key: TransferKey, now: Optional[float] = None) -> TransmissionAction:
+        # Create the first send action for a transfer.
         transfer = self.outbound_transfers[key]
         return self._transmission_action(
             transfer,
@@ -241,6 +256,7 @@ class ReliabilityManager:
             now=now,
         )
 
+    # Build an action for sending selected blocks.
     def _transmission_action(
         self,
         transfer: OutboundTransfer,
@@ -274,6 +290,7 @@ class ReliabilityManager:
         *,
         now: Optional[float] = None,
     ) -> TransmissionAction:
+        # Process an incoming ACK and choose the next send action.
         key = self.make_key(source_address, packet_type, message_id, sequence_number)
         transfer = self.outbound_transfers.get(key)
         if transfer is None:
@@ -348,6 +365,7 @@ class ReliabilityManager:
         reason: str,
         now: Optional[float] = None,
     ) -> TransmissionAction:
+        # Build a retry action or fail the transfer.
         if transfer.retry_count >= transfer.max_retries:
             del self.outbound_transfers[transfer.key]
             return TransmissionAction(
@@ -367,6 +385,7 @@ class ReliabilityManager:
         )
 
     def service_outbound(self, now: Optional[float] = None) -> List[TransmissionAction]:
+        # Create retry actions for timed-out transfers.
         now = time.monotonic() if now is None else now
         actions: List[TransmissionAction] = []
         for transfer in list(self.outbound_transfers.values()):
@@ -375,7 +394,7 @@ class ReliabilityManager:
             transfer.loss_in_window = True
             transfer.reduced_window_size = max(
                 transfer.min_window_size,
-                transfer.window_size // 2,
+                transfer.window_size // 2, # Window size is halved on timeout
             )
             missing = [
                 block
@@ -399,6 +418,7 @@ class ReliabilityManager:
         *,
         now: Optional[float] = None,
     ) -> InboundResult:
+        # Store one incoming fragment and update its transfer.
         now = time.monotonic() if now is None else now
         packet_type = self._packet_type(packet["packet_type"])
         message_id = packet.get("data_id", packet.get("update_id"))
@@ -474,6 +494,7 @@ class ReliabilityManager:
             complete_fragments=complete_fragments,
         )
 
+    # Advance full windows and create their ACKs.
     def _advance_complete_inbound_windows(self, transfer: InboundTransfer) -> List[AckInfo]:
         acknowledgements: List[AckInfo] = []
         while transfer.window_start <= transfer.last_block_number:
@@ -502,7 +523,8 @@ class ReliabilityManager:
             transfer.ack_deadline = None
 
         return acknowledgements
-
+    
+    # Build an ACK for the current receive window.
     def _current_ack(self, transfer: InboundTransfer) -> AckInfo:
         received = tuple(
             block
@@ -522,16 +544,19 @@ class ReliabilityManager:
         history: Dict[Tuple[int, int], AckInfo],
         block_number: int,
     ) -> Optional[AckInfo]:
+        # Find the saved ACK that covers a block.
         for (window_start, window_end), ack in history.items():
             if window_start <= block_number <= window_end:
                 return ack
         return None
 
+    # Find the ACK to resend for a duplicate block.
     def _ack_for_duplicate(
         self,
         transfer: InboundTransfer,
         block_number: int,
     ) -> Optional[AckInfo]:
+        # Find the ACK to resend for a duplicate block.
         historical = self._ack_for_block(transfer.ack_history, block_number)
         if historical is not None:
             return historical
@@ -539,6 +564,7 @@ class ReliabilityManager:
             return self._current_ack(transfer)
         return None
 
+    # Mark loss and reduce the next window size.
     @staticmethod
     def _mark_inbound_loss(transfer: InboundTransfer) -> None:
         transfer.loss_in_window = True
@@ -547,6 +573,7 @@ class ReliabilityManager:
             transfer.window_size // 2,
         )
 
+    # Create delayed ACKs for partial receive windows.
     def service_inbound(self, now: Optional[float] = None) -> List[Tuple[TransferKey, AckInfo]]:
         now = time.monotonic() if now is None else now
         acknowledgements: List[Tuple[TransferKey, AckInfo]] = []
@@ -560,6 +587,7 @@ class ReliabilityManager:
             transfer.ack_deadline = None
         return acknowledgements
 
+    # Remove expired incoming and completed transfers.
     def cleanup(self, now: Optional[float] = None) -> List[TransferKey]:
         now = time.monotonic() if now is None else now
         expired_inbound = [
@@ -579,8 +607,10 @@ class ReliabilityManager:
             del self.completed_inbound[key]
         return expired_inbound
 
+    # Return whether an outgoing transfer is active.
     def has_outbound_transfer(self, key: TransferKey) -> bool:
         return key in self.outbound_transfers
 
+    # Return an outgoing transfer if it exists.
     def get_outbound_transfer(self, key: TransferKey) -> Optional[OutboundTransfer]:
         return self.outbound_transfers.get(key)
