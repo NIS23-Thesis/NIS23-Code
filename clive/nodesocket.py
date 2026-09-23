@@ -1,448 +1,884 @@
+"""CLIVE NodeSocket: thesis-defined single-hop wireless UDP emulation.
+
+This module is the network-emulation boundary used by FLAME.  It deliberately does
+*not* implement FLAME discovery, membership, fragmentation, acknowledgements,
+retransmission, sliding-window reliability, routing, or forwarding.  Those are protocol
+responsibilities above NodeSocket.
+
+NodeSocket applies the CLIVE methodology to UDP datagrams:
+
+* virtual/overlay <-> physical/underlay address translation;
+* topology from the shared precomputed mobility trace;
+* distance -> RSSI using the log-distance path-loss equation;
+* RSSI -> bandwidth / PLR / IPDV using Thesis Table 3-3;
+* token-bucket transmission-rate limiting;
+* thesis-specified probabilistic packet loss;
+* thesis-specified Gaussian IPDV;
+* transmit/receive energy estimates from Equations 3-13 and 3-14; and
+* total and per-packet-type metrics plus packet-event logging.
+
+A logical broadcast is counted as one protocol/radio transmission.  Receiver outcomes
+are evaluated independently from each sender-receiver link because Table 3-3 defines link
+conditions pairwise from their distance/RSSI.  The thesis defines no separate broadcast PHY
+rate; therefore no artificial fixed broadcast-rate fraction and no weakest-receiver global
+broadcast rate are used here.
 """
-CLIVE NodeSocket.
-
-Provides the network interface used by an emulated Node.
-
-NodeSocket:
-- sends and receives raw bytes through UDP
-- translates overlay and underlay addresses
-- determines node distance from the mobility trace
-- applies reachability, bandwidth, packet loss, delay, and IPDV
-- records network-level metrics
-
-NodeSocket does not know or interpret the protocol carried by the bytes.
-"""
-
 from __future__ import annotations
 
+import errno
+import hashlib
+import heapq
+import ipaddress
+import json
 import math
 import random
+import select
 import socket
-import time
 import threading
-from typing import Dict, List, Tuple
+import time
+from collections import defaultdict, deque
+from itertools import count
 
-from orchestrator import EmulationPlan, NodeSpec
+from orchestrator import DEFAULT_PORT, finite
 
+Address = tuple[str, int]
+BROADCAST_IP = "255.255.255.255"
+BROADCAST_ADDRESS = (BROADCAST_IP, DEFAULT_PORT)
+MAX_DATAGRAM = 65507
 
-Address = Tuple[str, int]
-
-
-RSSI_BANDS = (
-    (None, -85.0, 0.00, 1.00, None, False),
-    (-85.0, -75.0, 0.20, 0.10, 25.0, True),
-    (-75.0, -65.0, 0.44, 0.02, 5.0, True),
-    (-65.0, None, 1.00, 0.00, 1.0, True),
-)
+# Thesis Table 3-3 thresholds and modifiers.
+RSSI_UNREACHABLE_DBM = -85.0
+RSSI_POOR_DBM = -75.0
+RSSI_GOOD_DBM = -65.0
 
 
 def link_conditions(distance_m, cfg):
-    if distance_m == float("inf"):
-        return {
-            "reachable": False,
-            "bandwidth_bps": 0.0,
-            "plr": 1.0,
-            "ipdv_ms": None,
-        }
+    """Return the exact CLIVE Table 3-3 link conditions for ``distance_m``.
 
-    rssi = (
-        cfg.rssi0_dbm
-        - 10
-        * cfg.pathloss_exponent
-        * math.log10(max(distance_m, 1e-6) / cfg.d0_m)
+    The path-loss equation is evaluated from the thesis reference distance d0.  Distances
+    below d0 are clamped to d0 because the methodology defines RSSI0 at d0=1 m and does
+    not define extrapolation above that reference signal strength.
+    """
+    finite(distance_m, "distance_m", 0)
+
+    effective_distance = max(float(distance_m), float(cfg.d0_m))
+    rssi = cfg.rssi0_dbm - 10.0 * cfg.pathloss_exponent * math.log10(
+        effective_distance / cfg.d0_m
     )
 
-    for lo, hi, bw, plr, ipdv, reachable in RSSI_BANDS:
-        if (lo is None or rssi > lo) and (hi is None or rssi <= hi):
-            return {
-                "reachable": reachable,
-                "bandwidth_bps": cfg.max_data_rate_bps * bw,
-                "plr": plr,
-                "ipdv_ms": ipdv,
-            }
+    # Table 3-3.  At the -85 dBm boundary we treat the link as unreachable; this is
+    # consistent with the methodology's ~70 m transmission-limit validation criterion.
+    if rssi <= RSSI_UNREACHABLE_DBM:
+        fraction, plr, ipdv_ms = 0.0, 1.00, None
+    elif rssi <= RSSI_POOR_DBM:
+        fraction, plr, ipdv_ms = 0.20, 0.10, 25.0
+    elif rssi < RSSI_GOOD_DBM:
+        fraction, plr, ipdv_ms = 0.44, 0.02, 5.0
+    else:
+        fraction, plr, ipdv_ms = 1.00, 0.00, 1.0
 
     return {
-        "reachable": False,
-        "bandwidth_bps": 0.0,
-        "plr": 1.0,
-        "ipdv_ms": None,
+        "reachable": fraction > 0.0,
+        "rssi_dbm": rssi,
+        "bandwidth_bps": cfg.max_data_rate_bps * fraction,
+        "plr": plr,
+        "ipdv_ms": ipdv_ms,
     }
 
 
 class TokenBucket:
+    """Bit-based token bucket used to enforce CLIVE's emulated transmission rate.
 
-    def __init__(self, rate_bps):
-        self.rate_bps = float(rate_bps)
-        self.tokens = self.rate_bps
-        self.last = time.monotonic()
-        self.lock = threading.Lock()
+    The bucket starts empty.  Consequently, a first packet of L bits on a rate-R link
+    requires L/R seconds before it can be emitted.  That token wait is the transmission-rate
+    delay; NodeSocket must not add L/R a second time after the tokens have been consumed.
+    """
 
-    def set_rate(self, rate_bps):
-        with self.lock:
-            self.rate_bps = float(rate_bps)
-            self.tokens = min(
-                self.tokens,
-                max(self.rate_bps, 1.0),
-            )
+    def __init__(self, capacity_bits=MAX_DATAGRAM * 8, now=None):
+        finite(capacity_bits, "capacity_bits", 0, strictly=True)
+        self.capacity = float(capacity_bits)
+        self.tokens = 0.0
+        self.updated = time.monotonic() if now is None else float(now)
+        self.rate = None
 
-    def consume(self, bits):
-        with self.lock:
-            if self.rate_bps <= 0:
-                return None
+    def wait_time(self, bits, rate_bps, now=None):
+        finite(bits, "bits", 0)
+        finite(rate_bps, "rate_bps", 0, strictly=True)
+        if bits > self.capacity:
+            raise ValueError("packet exceeds token bucket capacity")
 
-            now = time.monotonic()
+        now = time.monotonic() if now is None else float(now)
+        if now < self.updated:
+            raise ValueError("token bucket clock moved backward")
 
-            elapsed = now - self.last
-            self.tokens = min(
-                self.rate_bps,
-                self.tokens + elapsed * self.rate_bps,
-            )
+        # Credit elapsed time at the rate that applied during that elapsed interval.
+        previous_rate = rate_bps if self.rate is None else self.rate
+        self.tokens = min(
+            self.capacity,
+            self.tokens + (now - self.updated) * previous_rate,
+        )
+        self.updated = now
+        self.rate = rate_bps
+        return max(0.0, (bits - self.tokens) / rate_bps)
 
-            self.last = now
-
-            if self.tokens >= bits:
-                self.tokens -= bits
-                return 0.0
-
-            wait = (bits - self.tokens) / self.rate_bps
-
-            self.tokens = 0.0
-            self.last = now
-
-            return wait
+    def consume(self, bits, rate_bps, now=None):
+        wait = self.wait_time(bits, rate_bps, now)
+        if wait > 1e-9:
+            return False
+        self.tokens = max(0.0, self.tokens - bits)
+        return True
 
 
 def energy_tx(bits, distance_m, cfg):
+    """Equation 3-13: Etx = k(Eelec + Eamp * d^n)."""
+    finite(bits, "bits", 0)
+    finite(distance_m, "distance_m", 0)
     return bits * (
         cfg.e_elec_j_per_bit
-        + cfg.e_amp_j_per_bit_m2
-        * (distance_m ** cfg.pathloss_exponent)
+        + cfg.e_amp_j_per_bit_m2 * float(distance_m) ** cfg.pathloss_exponent
     )
 
 
 def energy_rx(bits, cfg):
+    """Equation 3-14: Erx = Eelec * k."""
+    finite(bits, "bits", 0)
     return bits * cfg.e_elec_j_per_bit
 
 
+def parse_common_header(data):
+    """Parse only the thesis-defined 4-byte common header for logging/metrics.
+
+    Packet validation belongs to FLAME's Parsing Submodule, not NodeSocket.
+    """
+    if len(data) < 4:
+        return None
+    return {
+        "protocol_version": data[0] >> 4,
+        "packet_type": data[0] & 0x0F,
+        "role": data[1] >> 7,
+        "padding": data[1] & 0x7F,
+        "sequence_number": int.from_bytes(data[2:4], "big"),
+    }
+
+
 class MetricsCollector:
+    """Thread-safe CLIVE packet metrics and JSONL event stream."""
 
-    def __init__(self, node_name):
+    # The first six thesis-required quantities are represented by packets/bits/energy
+    # sent and received.  Additional counters distinguish local emulator failures from
+    # simulated wireless delivery loss without changing the required metrics.
+    FIELDS = (
+        "packets_attempted",
+        "bits_attempted",
+        "packets_sent",
+        "bits_sent",
+        "energy_sent_j",
+        "packets_received",
+        "bits_received",
+        "energy_received_j",
+        "packets_dropped",
+        "delivery_attempts",
+        "delivery_drops",
+        "underlay_datagrams_sent",
+        "underlay_errors",
+    )
+
+    def __init__(self, node_name, log_path=None, tail_size=256):
         self.node_name = node_name
+        self.lock = threading.Lock()
+        self.totals = {name: 0 for name in self.FIELDS}
+        self.by_packet_type = defaultdict(
+            lambda: {name: 0 for name in self.FIELDS}
+        )
+        self.packet_log = deque(maxlen=tail_size)
+        self.log_path = str(log_path) if log_path else None
+        self.stream = (
+            open(log_path, "x", encoding="utf-8", buffering=1)
+            if log_path
+            else None
+        )
+        self.unknown_sources_rejected = 0
+        self.records_written = 0
 
-        self.packets_sent = 0
-        self.bits_sent = 0
-        self.energy_sent_j = 0.0
+    def record(self, kind, *, header=None, counters=None, **fields):
+        key = "unknown" if header is None else str(header["packet_type"])
+        record = {
+            "event": kind,
+            "node_name": self.node_name,
+            "common_header": header,
+            **fields,
+        }
+        with self.lock:
+            if self.stream:
+                self.stream.write(json.dumps(record, allow_nan=False) + "\n")
+            for name, value in (counters or {}).items():
+                self.totals[name] += value
+                self.by_packet_type[key][name] += value
+            self.packet_log.append(record)
+            self.records_written += 1
 
-        self.packets_received = 0
-        self.bits_received = 0
-        self.energy_received_j = 0.0
-
-        self.packets_dropped = 0
-
-        self.packet_log = []
-
-    def record_send(
-        self,
-        destination,
-        bits,
-        distance_m,
-        energy_j,
-        sent,
-        delay_s,
-    ):
-        self.packets_sent += 1
-        self.bits_sent += bits
-        self.energy_sent_j += energy_j
-
-        self.packet_log.append({
-            "direction": "send",
-            "source": self.node_name,
-            "destination": destination,
-            "bits": bits,
-            "distance_m": round(distance_m, 3),
-            "delay_s": round(delay_s, 6),
-            "sent": sent,
-        })
-
-    def record_drop(self):
-        self.packets_dropped += 1
-
-    def record_receive(self, bits, energy_j, source):
-        self.packets_received += 1
-        self.bits_received += bits
-        self.energy_received_j += energy_j
-
-        self.packet_log.append({
-            "direction": "receive",
-            "source": source,
-            "destination": self.node_name,
-            "bits": bits,
-        })
+    def reject_unknown(self):
+        # Unknown physical senders are not part of the emulation plan.  Avoid allowing
+        # arbitrary host traffic to grow the packet log indefinitely.
+        with self.lock:
+            self.unknown_sources_rejected += 1
 
     def snapshot(self):
-        return {
-            "node_name": self.node_name,
-            "packets_sent": self.packets_sent,
-            "bits_sent": self.bits_sent,
-            "energy_sent_j": self.energy_sent_j,
-            "packets_received": self.packets_received,
-            "bits_received": self.bits_received,
-            "energy_received_j": self.energy_received_j,
-            "packets_dropped": self.packets_dropped,
-            "packet_log": self.packet_log,
-        }
+        with self.lock:
+            return {
+                "schema_version": 3,
+                "node_name": self.node_name,
+                **self.totals,
+                "by_packet_type": {
+                    key: dict(value) for key, value in self.by_packet_type.items()
+                },
+                "packet_log": list(self.packet_log),
+                "packet_log_is_tail": True,
+                "packet_log_path": self.log_path,
+                "records_written": self.records_written,
+                "unknown_sources_rejected": self.unknown_sources_rejected,
+                "accounting": (
+                    "packets_sent/bits_sent = logical radio emissions accepted for "
+                    "transmission; delivery_drops = per-recipient simulated wireless loss"
+                ),
+            }
+
+    def close(self):
+        with self.lock:
+            if self.stream:
+                self.stream.close()
+                self.stream = None
 
 
 class NodeSocket:
+    """Socket-like CLIVE endpoint implementing the thesis link-emulation model."""
 
-    def __init__(
-        self,
-        node_spec: NodeSpec,
-        plan: EmulationPlan,
-        seed: int = 0,
-    ):
+    def __init__(self, node_spec, plan, seed=0, *, log_path=None):
+        node_spec.validate()
+        plan.validate()
+        if node_spec not in plan.nodes:
+            raise ValueError("node spec is not a member of the plan")
+
         self.spec = node_spec
         self.plan = plan
-        self.trace = plan.trace
         self.cfg = plan.link_config
-
-        self.tick = 0
-
-        self.metrics = MetricsCollector(node_spec.name)
-
-        self.nodes = {
-            node.name: node
-            for node in plan.nodes
-        }
+        self.trace = plan.trace
 
         self._underlay_of = {
-            node.name: (
-                node.underlay_ip,
-                node.underlay_port,
-            )
+            node.name: (node.underlay_ip, node.underlay_port)
             for node in plan.nodes
         }
-
         self._overlay_of = {
-            node.name: (
-                node.overlay_ip,
-                node.overlay_port,
-            )
+            node.name: (node.overlay_ip, node.overlay_port)
             for node in plan.nodes
         }
-
-        self._name_of_underlay = {
-            (
-                node.underlay_ip,
-                node.underlay_port,
-            ): node.name
-            for node in plan.nodes
-        }
-
         self._name_of_overlay = {
-            (
-                node.overlay_ip,
-                node.overlay_port,
-            ): node.name
-            for node in plan.nodes
+            address: name for name, address in self._overlay_of.items()
+        }
+        self._name_of_underlay = {
+            address: name for name, address in self._underlay_of.items()
         }
 
-        self._bucket = TokenBucket(
-            self.cfg.max_data_rate_bps
-        )
+        # Convert the wall-clock experiment epoch into the local monotonic clock domain.
+        self._epoch_mono = time.monotonic() + plan.epoch_start - time.time()
 
-        self._rng = random.Random(
-            seed + sum(ord(c) for c in node_spec.name)
-        )
+        self._cv = threading.Condition(threading.RLock())
+        self._heap = []
+        self._pending = {}
+        self._queued_bytes = 0
+        self._order = count()
+        self._ids = count(1)
+        self._closed = False
+        self._fatal = None
 
-        self._sock = socket.socket(
-            socket.AF_INET,
-            socket.SOCK_DGRAM,
-        )
+        # Reproducible but node-specific random stream for PLR and IPDV.
+        seed_bytes = hashlib.sha256(f"{seed}:{node_spec.name}".encode()).digest()[:8]
+        self._rng = random.Random(int.from_bytes(seed_bytes, "big"))
 
-        self._sock.bind(
-            (
-                node_spec.underlay_ip,
-                node_spec.underlay_port,
+        # One bucket per logical link plus a sender-wide hardware-rate ceiling.  The
+        # latter prevents aggregate transmissions to different peers from exceeding the
+        # configured maximum radio data rate.
+        self._buckets = {}
+        self._shared_bucket = TokenBucket(self.cfg.bucket_capacity_bytes * 8)
+
+        self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            self._sock.bind(self._underlay_of[node_spec.name])
+            self._sock.setblocking(False)
+            self.metrics = MetricsCollector(
+                node_spec.name,
+                log_path,
+                plan.config.log_tail_records,
             )
-        )
+        except BaseException:
+            self._sock.close()
+            raise
 
-        self._sock.setblocking(False)
+        self._sender = threading.Thread(
+            target=self._sender_loop,
+            daemon=True,
+            name=f"clive-tx-{node_spec.name}",
+        )
+        self._sender.start()
+
+    # ------------------------------------------------------------------
+    # Shared experiment clock / mobility
+    # ------------------------------------------------------------------
+
+    def set_epoch(self, epoch_start):
+        """Arm this endpoint to the supervisor-provided shared experiment epoch."""
+        finite(epoch_start, "epoch_start", 0, strictly=True)
+        with self._cv:
+            if self._pending:
+                raise RuntimeError("cannot change epoch with pending transmissions")
+            self.plan.epoch_start = epoch_start
+            self._epoch_mono = time.monotonic() + epoch_start - time.time()
+
+    def elapsed(self):
+        return time.monotonic() - self._epoch_mono
+
+    def current_tick(self):
+        return max(0, int(self.elapsed() / self.plan.mobility_config.tick_interval))
 
     def set_tick(self, tick):
-        self.tick = tick
+        """Compatibility guard: topology is driven only by the shared experiment clock."""
+        if type(tick) is not int or tick != self.current_tick():
+            raise ValueError("topology tick must equal the shared experiment clock")
 
-    def _distance_to(self, destination_name):
-        positions = self.trace.get(self.tick, {})
+    def _distance_to(self, name, tick=None):
+        tick = self.current_tick() if tick is None else tick
+        if tick not in self.trace:
+            raise RuntimeError(f"mobility trace has no current tick {tick}")
+        try:
+            source = self.trace[tick][self.spec.name]
+            target = self.trace[tick][name]
+        except KeyError as exc:
+            raise RuntimeError(
+                f"mobility trace tick {tick} is missing node {exc.args[0]}"
+            ) from exc
+        return math.hypot(source[0] - target[0], source[1] - target[1])
 
-        mine = positions.get(self.spec.name)
-        other = positions.get(destination_name)
+    def _time_to_next_tick(self):
+        quantum = self.plan.mobility_config.tick_interval
+        elapsed = self.elapsed()
+        next_boundary = (math.floor(max(0.0, elapsed) / quantum) + 1) * quantum
+        return max(0.0, next_boundary - elapsed)
 
-        if mine is None or other is None:
-            return float("inf")
+    # ------------------------------------------------------------------
+    # Socket compatibility / health
+    # ------------------------------------------------------------------
 
-        return math.hypot(
-            other[0] - mine[0],
-            other[1] - mine[1],
+    def fileno(self):
+        return self._sock.fileno()
+
+    def check_health(self):
+        if self._fatal is not None:
+            raise RuntimeError("NodeSocket background sender failed") from self._fatal
+
+    def wait_readable(self, timeout):
+        self.check_health()
+        if timeout <= 0:
+            return False
+        return bool(select.select([self._sock], [], [], timeout)[0])
+
+    # ------------------------------------------------------------------
+    # Thesis stochastic link rules
+    # ------------------------------------------------------------------
+
+    def _packet_is_lost(self, plr):
+        """Apply the exact Table 4-3 PLR procedure (integer roll 0..999)."""
+        finite(plr, "plr", 0)
+        if plr > 1:
+            raise ValueError("plr must be <= 1")
+        rolled = self._rng.randrange(1000)  # 0..999 inclusive
+        threshold = plr * 1000.0
+        return rolled < threshold, rolled, threshold
+
+    def _sample_ipdv_s(self, max_ipdv_ms):
+        """Apply Table 4-3: random.gauss(0.0, max_ipdv/3.0), returned in seconds."""
+        if not self.cfg.ipdv_enabled or max_ipdv_ms is None:
+            return 0.0
+        finite(max_ipdv_ms, "max_ipdv_ms", 0)
+        return self._rng.gauss(0.0, max_ipdv_ms / 3.0) / 1000.0
+
+    # ------------------------------------------------------------------
+    # Sending
+    # ------------------------------------------------------------------
+
+    def _event(self, req, kind, counters=None, **fields):
+        self.metrics.record(
+            kind,
+            header=req["header"],
+            counters=counters,
+            packet_id=req["id"],
+            time_s=self.elapsed(),
+            destination=list(req["destination"]),
+            is_broadcast=req["broadcast"],
+            **fields,
         )
 
-    def _resolve_destination(self, destination: Address):
-        name = self._name_of_overlay.get(destination)
+    def _normalize_destination(self, destination):
+        if (
+            not isinstance(destination, tuple)
+            or len(destination) != 2
+            or not isinstance(destination[0], str)
+            or type(destination[1]) is not int
+            or not 1 <= destination[1] <= 65535
+        ):
+            raise ValueError("destination must be (IPv4 address, port)")
+        try:
+            ipaddress.IPv4Address(destination[0])
+        except ipaddress.AddressValueError as exc:
+            raise ValueError("destination must contain a valid IPv4 address") from exc
+        return destination
 
-        if name is None:
-            raise ValueError(
-                f"Unknown overlay address: {destination}"
+    def sendto(self, data, destination):
+        if not isinstance(data, (bytes, bytearray, memoryview)):
+            raise TypeError("data must be bytes-like")
+        data = bytes(data)
+        if len(data) > MAX_DATAGRAM:
+            raise OSError(errno.EMSGSIZE, "IPv4 UDP payload exceeds 65507 bytes")
+
+        destination = self._normalize_destination(destination)
+        broadcast = destination[0] == BROADCAST_IP
+        if broadcast:
+            # FLAME HELLO uses the broadcast address.  CLIVE realizes the broadcast on
+            # the unicast underlay by evaluating every matching virtual receiver.
+            targets = [
+                node.name
+                for node in self.plan.nodes
+                if node.name != self.spec.name
+                and node.overlay_port == destination[1]
+            ]
+        else:
+            name = self._name_of_overlay.get(destination)
+            if name is None:
+                raise ValueError(f"unknown overlay address: {destination}")
+            targets = [name]
+
+        with self._cv:
+            self.check_health()
+            if self._closed:
+                raise OSError(errno.EBADF, "NodeSocket is closed")
+            if not 0 <= self.elapsed() < self.plan.config.duration_s:
+                raise RuntimeError("send outside experiment time window")
+
+            req = {
+                "id": next(self._ids),
+                "data": data,
+                "destination": destination,
+                "broadcast": broadcast,
+                "targets": targets,
+                "header": parse_common_header(data),
+                "bits": len(data) * 8,
+                "queued_at_mono": time.monotonic(),
+                "emitted": False,
+                "outstanding": 0,
+            }
+            self._event(
+                req,
+                "attempt",
+                {
+                    "packets_attempted": 1,
+                    "bits_attempted": req["bits"],
+                },
             )
 
-        return name
-
-    def sendto(self, data: bytes, destination: Address):
-        """
-        Send raw bytes through the emulated network.
-        """
-
-        destination_name = self._resolve_destination(destination)
-
-        if destination_name == self.spec.name:
-            return False
-
-        distance = self._distance_to(destination_name)
-
-        conditions = link_conditions(
-            distance,
-            self.cfg,
-        )
-
-        bits = len(data) * 8
-
-        energy = energy_tx(
-            bits,
-            distance if math.isfinite(distance) else 0.0,
-            self.cfg,
-        )
-
-        if not conditions["reachable"]:
-            self.metrics.record_drop()
-            self.metrics.record_send(
-                destination,
-                bits,
-                distance,
-                energy,
-                False,
-                0.0,
-            )
-            return False
-
-        self._bucket.set_rate(
-            conditions["bandwidth_bps"]
-        )
-
-        wait = self._bucket.consume(bits)
-
-        if wait is None:
-            self.metrics.record_drop()
-            self.metrics.record_send(
-                destination,
-                bits,
-                distance,
-                energy,
-                False,
-                0.0,
-            )
-            return False
-
-        propagation_delay = (
-            distance
-            / self.cfg.propagation_speed_mps
-        )
-
-        ipdv = 0.0
-
-        if conditions["ipdv_ms"] is not None:
-            ipdv = (
-                self._rng.gauss(
-                    0.0,
-                    conditions["ipdv_ms"] / 3.0,
+            if (
+                len(self._pending) >= self.plan.config.max_queue_packets
+                or self._queued_bytes + len(data) > self.plan.config.max_queue_bytes
+            ):
+                self._event(
+                    req,
+                    "local_drop",
+                    {"packets_dropped": 1},
+                    reason="queue_full",
                 )
-                / 1000.0
+                raise BlockingIOError(errno.ENOBUFS, "emulated send queue is full")
+
+            self._pending[req["id"]] = req
+            self._queued_bytes += len(data)
+            self._push(time.monotonic(), "tx", req, None)
+
+        # Match socket.sendto(): return bytes accepted by the local socket interface.
+        return len(data)
+
+    def _push(self, when, action, req, target):
+        heapq.heappush(
+            self._heap,
+            (when, next(self._order), action, req, target),
+        )
+        self._cv.notify()
+
+    def _finish(self, req):
+        if self._pending.pop(req["id"], None) is not None:
+            self._queued_bytes -= len(req["data"])
+
+    def _links_for_request(self, req, tick):
+        links = []
+        for name in req["targets"]:
+            distance = self._distance_to(name, tick)
+            links.append(
+                {
+                    "name": name,
+                    "distance_m": distance,
+                    "conditions": link_conditions(distance, self.cfg),
+                }
+            )
+        return links
+
+    def _radio_rate_and_distance(self, req, links):
+        """Return the sender-side serialization rate and TX-energy distance.
+
+        Unicast has one pairwise link, so Table 3-3 directly supplies its effective
+        bandwidth.  If that link is unreachable, the attempted frame is still emitted by the
+        local radio; the link itself remains logged as 0 bps and every receiver outcome drops.
+
+        Broadcast is one logical transmission, not N unicasts.  The thesis does not define a
+        separate broadcast PHY/rate rule, so NodeSocket must not choose a receiver (for
+        example, the weakest reachable receiver) to set one global broadcast bandwidth.
+        Instead the sender is paced once at the configured radio ceiling and each receiver's
+        Table 3-3 bandwidth is applied independently as receiver-specific delivery delay in
+        _transmit().  Thus one broadcast counts once while each A->receiver link keeps its own
+        thesis-defined conditions.
+
+        Equation 3-13 requires one communication distance for the single TX-energy charge.
+        The methodology does not state how to choose d for a one-to-many broadcast.  The
+        explicit convention here is the farthest *currently reachable* receiver: one emission
+        is charged once at the distance needed to cover all receivers that can presently hear
+        it.  This is logged so the assumption is visible in experimental output.
+        """
+        if not req["broadcast"]:
+            if not links:
+                return self.cfg.max_data_rate_bps, 0.0, 0.0
+            link = links[0]
+            link_rate = link["conditions"]["bandwidth_bps"]
+            airtime_rate = link_rate or self.cfg.max_data_rate_bps
+            return airtime_rate, link["distance_m"], link_rate
+
+        reachable = [link for link in links if link["conditions"]["reachable"]]
+        energy_distance = (
+            max(link["distance_m"] for link in reachable) if reachable else 0.0
+        )
+        return self.cfg.max_data_rate_bps, energy_distance, None
+
+    def _transmit(self, req):
+        tick = self.current_tick()
+        links = self._links_for_request(req, tick)
+        airtime_rate, energy_distance, unicast_link_rate = self._radio_rate_and_distance(
+            req, links
+        )
+
+        now = time.monotonic()
+        if self.elapsed() >= self.plan.config.duration_s:
+            self._cancel_pending("simulation_end")
+            return
+
+        bucket_key = (
+            ("broadcast", req["destination"][1])
+            if req["broadcast"]
+            else req["targets"][0]
+        )
+        bucket = self._buckets.setdefault(
+            bucket_key,
+            TokenBucket(self.cfg.bucket_capacity_bytes * 8, now=now),
+        )
+
+        # Token-bucket waiting is the bandwidth-induced queuing/transmission delay.
+        link_wait = bucket.wait_time(req["bits"], airtime_rate, now)
+        radio_wait = self._shared_bucket.wait_time(
+            req["bits"], self.cfg.max_data_rate_bps, now
+        )
+        wait = max(link_wait, radio_wait)
+
+        if wait > 1e-9:
+            # If a long queue ever spans a mobility quantum, wake at the next tick so the
+            # distance/RSSI/rate can be recomputed rather than using stale topology.
+            next_tick_wait = self._time_to_next_tick()
+            if next_tick_wait > 1e-9:
+                wait = min(wait, next_tick_wait)
+            self._push(now + wait, "tx", req, None)
+            return
+
+        if not bucket.consume(req["bits"], airtime_rate, now):
+            raise RuntimeError("link token accounting invariant failed")
+        if not self._shared_bucket.consume(
+            req["bits"], self.cfg.max_data_rate_bps, now
+        ):
+            raise RuntimeError("shared token accounting invariant failed")
+
+        req["emitted"] = True
+        queue_and_tx_delay = now - req["queued_at_mono"]
+        tx_energy = energy_tx(req["bits"], energy_distance, self.cfg)
+        self._event(
+            req,
+            "transmit",
+            {
+                "packets_sent": 1,
+                "bits_sent": req["bits"],
+                "energy_sent_j": tx_energy,
+            },
+            distance_m=(energy_distance if req["broadcast"] else links[0]["distance_m"]),
+            energy_distance_m=energy_distance,
+            energy_distance_policy=(
+                "farthest_reachable_receiver" if req["broadcast"] else "unicast_peer"
+            ),
+            tick=tick,
+            # A broadcast has no single receiver-derived Table 3-3 bandwidth.  Its
+            # per-receiver bandwidths are recorded on delivery_attempt/scheduled_delivery.
+            bandwidth_bps=(None if req["broadcast"] else unicast_link_rate),
+            airtime_rate_bps=airtime_rate,
+            queue_and_transmission_delay_s=queue_and_tx_delay,
+        )
+
+        # Evaluate each receiver independently from its pairwise Table 3-3 link.
+        for link in links:
+            name = link["name"]
+            distance = link["distance_m"]
+            conditions = link["conditions"]
+
+            self.metrics.record(
+                "delivery_attempt",
+                header=req["header"],
+                counters={"delivery_attempts": 1},
+                packet_id=req["id"],
+                time_s=self.elapsed(),
+                source=self.spec.name,
+                destination=list(self._overlay_of[name]),
+                distance_m=distance,
+                rssi_dbm=conditions["rssi_dbm"],
+                bandwidth_bps=conditions["bandwidth_bps"],
+                plr=conditions["plr"],
+                ipdv_ms=conditions["ipdv_ms"],
+                tick=tick,
             )
 
-        delay = max(
-            0.0,
-            self.cfg.base_delay_s
-            + wait
-            + propagation_delay
-            + ipdv,
-        )
+            lost, rolled, threshold = self._packet_is_lost(conditions["plr"])
+            if lost:
+                reason = "unreachable" if not conditions["reachable"] else "plr"
+                self._drop_delivery(
+                    req,
+                    name,
+                    reason,
+                    rolled=rolled,
+                    threshold=threshold,
+                    conditions=conditions,
+                    distance_m=distance,
+                )
+                continue
 
-        if self._rng.random() < conditions["plr"]:
-            self.metrics.record_drop()
-            self.metrics.record_send(
-                destination,
-                bits,
-                distance,
-                energy,
-                False,
-                delay,
+            # Unicast has already waited its full L/R in the pairwise token bucket.
+            # Broadcast has only been serialized once at the sender's configured maximum;
+            # add just enough receiver-specific delay for the total serialization component
+            # to equal L/R for this receiver's own Table 3-3 bandwidth.  This avoids both
+            # the old "weakest receiver controls everyone" rule and counting N broadcasts.
+            if req["broadcast"]:
+                pair_rate = conditions["bandwidth_bps"]
+                sender_serialization = req["bits"] / airtime_rate
+                pair_serialization = req["bits"] / pair_rate
+                pairwise_bandwidth_delay = max(
+                    0.0, pair_serialization - sender_serialization
+                )
+            else:
+                pairwise_bandwidth_delay = 0.0
+
+            # Chapter 3's link table then adds IPDV.  A negative jitter sample may not make
+            # delivery occur earlier than the link's bandwidth-imposed transmission time.
+            variation = self._sample_ipdv_s(conditions["ipdv_ms"])
+            extra_delay = (
+                pairwise_bandwidth_delay + self.cfg.base_delay_s + variation
             )
-            return False
+            extra_delay = max(pairwise_bandwidth_delay, extra_delay)
 
-        if delay > 0:
-            time.sleep(delay)
+            req["outstanding"] += 1
+            self._push(now + extra_delay, "deliver", req, name)
+            self._event(
+                req,
+                "scheduled_delivery",
+                target=list(self._overlay_of[name]),
+                distance_m=distance,
+                rssi_dbm=conditions["rssi_dbm"],
+                bandwidth_bps=conditions["bandwidth_bps"],
+                plr=conditions["plr"],
+                ipdv_s=variation,
+                pairwise_bandwidth_delay_s=pairwise_bandwidth_delay,
+                post_transmission_delay_s=extra_delay,
+            )
 
-        self._sock.sendto(
-            data,
-            self._underlay_of[destination_name],
+        if not req["outstanding"]:
+            self._finish(req)
+
+    def _drop_delivery(
+        self,
+        req,
+        name,
+        reason,
+        *,
+        rolled=None,
+        threshold=None,
+        conditions=None,
+        distance_m=None,
+    ):
+        fields = {
+            "target": list(self._overlay_of[name]),
+            "reason": reason,
+        }
+        if rolled is not None:
+            fields["plr_roll"] = rolled
+        if threshold is not None:
+            fields["plr_threshold"] = threshold
+        if conditions is not None:
+            fields.update(
+                rssi_dbm=conditions["rssi_dbm"],
+                bandwidth_bps=conditions["bandwidth_bps"],
+                plr=conditions["plr"],
+                ipdv_ms=conditions["ipdv_ms"],
+            )
+        if distance_m is not None:
+            fields["distance_m"] = distance_m
+        self._event(
+            req,
+            "delivery_drop",
+            {"delivery_drops": 1},
+            **fields,
         )
 
-        self.metrics.record_send(
-            destination,
-            bits,
-            distance,
-            energy,
-            True,
-            delay,
-        )
+    def _deliver(self, req, name):
+        try:
+            self._sock.sendto(req["data"], self._underlay_of[name])
+        except OSError as exc:
+            self._drop_delivery(req, name, f"underlay_error:{exc.errno}")
+            self._event(
+                req,
+                "underlay_error",
+                {"underlay_errors": 1},
+                error=str(exc),
+            )
+            # An actual host/OS transport failure is not simulated MANET loss; invalidate
+            # the run instead of silently treating it as radio PLR.
+            raise
+        else:
+            self._event(
+                req,
+                "underlay_send",
+                {"underlay_datagrams_sent": 1},
+                target=list(self._overlay_of[name]),
+            )
 
-        return True
+        req["outstanding"] -= 1
+        if req["outstanding"] == 0:
+            self._finish(req)
+
+    def _cancel_pending(self, reason):
+        # Deliveries already emitted onto the modeled radio but not yet forwarded to the
+        # underlay become per-recipient losses.  Requests not yet emitted are local drops.
+        seen_deliveries = set()
+        for _, _, action, req, name in self._heap:
+            if action == "deliver":
+                key = (req["id"], name)
+                if key not in seen_deliveries:
+                    seen_deliveries.add(key)
+                    self._drop_delivery(req, name, reason)
+
+        for req in list(self._pending.values()):
+            if not req["emitted"]:
+                self._event(
+                    req,
+                    "local_drop",
+                    {"packets_dropped": 1},
+                    reason=reason,
+                )
+
+        self._heap.clear()
+        self._pending.clear()
+        self._queued_bytes = 0
+
+    def _sender_loop(self):
+        try:
+            with self._cv:
+                while not self._closed:
+                    if not self._heap:
+                        self._cv.wait(0.05)
+                        continue
+
+                    if self.elapsed() >= self.plan.config.duration_s:
+                        self._cancel_pending("simulation_end")
+                        continue
+
+                    when, _, action, req, target = self._heap[0]
+                    wait = when - time.monotonic()
+                    if wait > 0:
+                        remaining = self.plan.config.duration_s - self.elapsed()
+                        self._cv.wait(min(wait, max(0.0, remaining)))
+                        continue
+
+                    heapq.heappop(self._heap)
+                    if action == "tx":
+                        self._transmit(req)
+                    elif action == "deliver":
+                        self._deliver(req, target)
+                    else:
+                        raise RuntimeError(f"unknown NodeSocket action {action!r}")
+        except BaseException as exc:
+            self._fatal = exc
+
+    # ------------------------------------------------------------------
+    # Receiving / underlay -> overlay translation
+    # ------------------------------------------------------------------
 
     def recvfrom(self, bufsize=65535):
-        """
-        Receive raw bytes and return the source's overlay address.
+        if type(bufsize) is not int or bufsize <= 0:
+            raise ValueError("bufsize must be a positive integer")
+        self.check_health()
 
-        Returns None when no packet is currently available.
-        """
+        for _ in range(self.plan.config.receive_batch_size):
+            try:
+                # Read the complete legal IPv4 UDP payload for correct packet/bit metrics,
+                # then expose socket-compatible truncation to the caller via bufsize.
+                data, address = self._sock.recvfrom(MAX_DATAGRAM)
+            except BlockingIOError:
+                return None
 
-        try:
-            data, underlay_address = self._sock.recvfrom(
-                bufsize
+            name = self._name_of_underlay.get(address)
+            if name is None:
+                self.metrics.reject_unknown()
+                continue
+            if not 0 <= self.elapsed() < self.plan.config.duration_s:
+                # Late host datagrams must not contaminate experiment metrics.
+                continue
+
+            self.metrics.record(
+                "receive",
+                header=parse_common_header(data),
+                counters={
+                    "packets_received": 1,
+                    "bits_received": len(data) * 8,
+                    "energy_received_j": energy_rx(len(data) * 8, self.cfg),
+                },
+                time_s=self.elapsed(),
+                source=list(self._overlay_of[name]),
+                tick=self.current_tick(),
             )
-        except BlockingIOError:
-            return None
+            return data[:bufsize], self._overlay_of[name]
 
-        source_name = self._name_of_underlay.get(
-            underlay_address
-        )
-
-        if source_name is None:
-            source_address = underlay_address
-        else:
-            source_address = self._overlay_of[
-                source_name
-            ]
-
-        bits = len(data)
-
-        self.metrics.record_receive(
-            bits=bits,
-            energy_j=energy_rx(
-                bits,
-                self.cfg,
-            ),
-            source=source_address,
-        )
-
-        return data, source_address
+        return None
 
     def close(self):
-        self._sock.close()
+        try:
+            with self._cv:
+                if self._closed:
+                    return
+                self._closed = True
+                self._cv.notify_all()
+                reason = (
+                    "socket_closed"
+                    if self.elapsed() < self.plan.config.duration_s
+                    else "simulation_end"
+                )
+                self._cancel_pending(reason)
+        finally:
+            self._sender.join(timeout=1.0)
+            self._sock.close()
+            self.metrics.close()
+
+        self.check_health()
