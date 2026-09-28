@@ -13,16 +13,20 @@ import time
 from collections import deque
 from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
 
+# from clive.evaluation.validate_nodesocket_acceptance import packet
+
 try:
     from datagram_buffer import DatagramBuffer
     from message import PacketType, fragment_payload, reassemble_fragments
     from parser import ROLE_RESTRICTIONS, parse_datagram, serialize_message
     from reliability import AckInfo, ReliabilityManager, TransferKey, TransmissionAction
+    from neighbor import NodeRole
 except ImportError:
     from .datagram_buffer import DatagramBuffer
     from .message import PacketType, fragment_payload, reassemble_fragments
     from .parser import ROLE_RESTRICTIONS, parse_datagram, serialize_message
     from .reliability import AckInfo, ReliabilityManager, TransferKey, TransmissionAction
+    from ..neighbor import NodeRole
 
 
 Address = Tuple[str, int]
@@ -95,6 +99,7 @@ class CommunicationModule:
         reassembly_timeout: float = 5.0,
         completed_retention: float = 2.0,
         max_retries: int = 3,
+        neighbor_module = None,
     ) -> None:
         if role not in (None, 0, 1):
             raise ValueError("Role must be 0, 1, or None.")
@@ -116,6 +121,7 @@ class CommunicationModule:
         self.event_buffer = ReceiveBuffer()
         self.route_handler = route_handler
         self.event_handler = event_handler
+        self.neighbor_module = neighbor_module
         self.reliability_manager = reliability_manager or ReliabilityManager(
             initial_window_size=initial_window_size,
             min_window_size=2,
@@ -367,34 +373,121 @@ class CommunicationModule:
                 self._record_error(str(exc), raw_bytes, source_address)
         return did_work
 
+    def _process_neighbor_packet(
+        self,
+        packet: dict,
+        source_address: Address,
+    ) -> None:
+        if self.neighbor_module is None:
+            return
+
+        packet_type = packet["packet_type"]
+
+        if packet_type == PacketType.HELLO:
+            node_role = (
+                NodeRole.SENSOR_NODE
+                if packet["role"] == 0
+                else NodeRole.CLUSTER_HEAD
+            )
+
+            self.neighbor_module.process_hello(
+                ip_address=source_address[0],
+                port=source_address[1],
+                node_role=node_role,
+                model_id=packet.get("model_id"),
+            )
+
+        elif packet_type == PacketType.JOIN:
+            self.neighbor_module.process_join(
+                ip_address=source_address[0],
+                port=source_address[1],
+                join_id=packet["join_id"],
+                model_id=packet.get("model_id"),
+            )
+
+            self.send_message(
+                {
+                    "packet_type": PacketType.JOIN_ACCEPT,
+                    "role": 1,
+                    "join_id": packet["join_id"],
+                    "timeout": 30,
+                    "rejected": 0,
+                },
+                destination=source_address,
+            )
+
+        elif packet_type == PacketType.JOIN_ACCEPT:
+            self.neighbor_module.process_join_accept(
+                ip_address=source_address[0],
+                port=source_address[1],
+                join_id=packet["join_id"],
+                rejected=packet["rejected"],
+            )
+
+        elif packet_type == PacketType.LEAVE:
+            self.neighbor_module.process_leave(
+                ip_address=source_address[0],
+                port=source_address[1],
+            )
+
+
     def _handle_parsed_packet(
         self,
         packet: dict,
-        source_address: Optional[Address],
+        source_address: Optional[Address] = None,
     ) -> None:
-        # Validate the packet and route it to the appropriate handler or buffer.
         packet_type = packet["packet_type"]
+
         if (
             self.role is not None
-            and self.role not in RECEIVER_ROLE_RESTRICTIONS.get(packet_type, {0, 1})
+            and self.role
+            not in RECEIVER_ROLE_RESTRICTIONS.get(packet_type, {0, 1})
         ):
             raise ValueError(
-                f"role {self.role} is not permitted to receive {packet_type.name}"
+                f"Packet type {packet_type.name} is not allowed "
+                f"for receiver role {self.role}"
             )
-        if packet_type in (PacketType.SENSOR_DATA_ACK, PacketType.MODEL_UPDATE_ACK):
-            if source_address is None:
-                raise ValueError("ACK packets require a source address.")
+
+        if packet_type in (
+            PacketType.SENSOR_DATA_ACK,
+            PacketType.MODEL_UPDATE_ACK,
+        ):
+            if source_address is not None:
+                packet["source_address"] = source_address
+
             self._consume_ack(packet, source_address)
             return
 
-        if packet_type in (PacketType.SENSOR_DATA, PacketType.MODEL_UPDATE):
-            if source_address is None:
-                raise ValueError("Reliable data packets require a source address.")
-            self._consume_reliable_fragment(packet, source_address)
+        if packet_type in (
+            PacketType.SENSOR_DATA,
+            PacketType.MODEL_UPDATE,
+        ):
+            if source_address is not None:
+                packet["source_address"] = source_address
+
+            self._consume_reliable_fragment(
+                packet,
+                source_address,
+            )
+
+            self._refresh_neighbor_membership(source_address)
             return
+
 
         if source_address is not None:
             packet["source_address"] = source_address
+
+            if packet_type in (
+                PacketType.HELLO,
+                PacketType.JOIN,
+                PacketType.JOIN_ACCEPT,
+                PacketType.LEAVE,
+            ):
+                self._process_neighbor_packet(
+                    packet,
+                    source_address,
+                )
+
         self._deliver(packet)
 
     def _consume_reliable_fragment(self, packet: dict, source_address: Address) -> None:
@@ -679,3 +772,19 @@ class CommunicationModule:
     def pop_events(self) -> List[dict]:
         # Remove and return all communication events.
         return self.event_buffer.get_all()
+
+    def _refresh_neighbor_membership(
+        self,
+        source_address: Optional[Address],
+    ) -> None:
+        if self.neighbor_module is None:
+            return
+
+        if source_address is None:
+            return
+
+        self.neighbor_module.refresh_neighbor(
+            ip_address=source_address[0],
+            port=source_address[1],
+        )
+
