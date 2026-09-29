@@ -470,8 +470,17 @@ class CommunicationModule:
                 source_address,
             )
 
-            self._refresh_neighbor_membership(source_address)
+            if packet_type == PacketType.SENSOR_DATA:
+                if source_address is not None and self.neighbor_module is not None:
+                    self.neighbor_module.process_sensor_data(
+                        ip_address=source_address[0],
+                        port=source_address[1],
+                    )
+            else:
+                self._refresh_neighbor_membership(source_address)
+
             return
+
 
 
         if source_address is not None:
