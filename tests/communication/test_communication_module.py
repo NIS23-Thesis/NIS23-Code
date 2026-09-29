@@ -4,6 +4,8 @@ import unittest
 from pathlib import Path
 from typing import List, Optional, Tuple
 
+from sympy import python
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from flame.communication.communication_module import CommunicationModule
@@ -670,6 +672,1066 @@ class RoutingTests(unittest.TestCase):
         finally:
             communication.stop()
 
+    def test_two_node_sensor_ch_handshake(self):
+        sensor_socket = FakeSocketInterface()
+        ch_socket = FakeSocketInterface()
+
+        sensor_neighbor_module = NeighborModule()
+        ch_neighbor_module = NeighborModule()
+
+        sensor = CommunicationModule(
+            sensor_socket,
+            role=0,
+            neighbor_module=sensor_neighbor_module,
+            auto_start=True,
+            poll_interval=0.01,
+        )
+
+        cluster_head = CommunicationModule(
+            ch_socket,
+            role=1,
+            neighbor_module=ch_neighbor_module,
+            auto_start=True,
+            poll_interval=0.01,
+        )
+
+        sensor_address = ("10.0.0.4", 5000)
+        ch_address = ("10.0.0.5", 5000)
+
+        try:
+            # ---------------------------------------------------------
+            # 1. Sensor discovers the Cluster Head through HELLO
+            # ---------------------------------------------------------
+            hello = serialize_message({
+                "packet_type": PacketType.HELLO,
+                "role": 1,
+                "sequence_number": 1,
+                "model_id": 2,
+            })
+
+            sensor.receive_datagram(
+                hello,
+                ch_address,
+            )
+
+            self.assertTrue(
+                wait_until(
+                    lambda: sensor_neighbor_module.has_neighbor(
+                        ch_address[0],
+                        ch_address[1],
+                    )
+                )
+            )
+
+            sensor_ch = sensor_neighbor_module.get_neighbor(
+                ch_address[0],
+                ch_address[1],
+            )
+
+            self.assertEqual(
+                sensor_ch.node_role,
+                NodeRole.CLUSTER_HEAD,
+            )
+
+            self.assertEqual(
+                sensor_ch.association_state,
+                AssociationState.DISCOVERED,
+            )
+
+            # ---------------------------------------------------------
+            # 2. Sensor starts JOIN toward the Cluster Head
+            # ---------------------------------------------------------
+            sensor_neighbor_module.start_join(
+                ip_address=ch_address[0],
+                port=ch_address[1],
+                join_id=15,
+                model_id=2,
+            )
+
+            sensor.send_message(
+                {
+                    "packet_type": PacketType.JOIN,
+                    "role": 0,
+                    "join_id": 15,
+                    "model_id": 2,
+                },
+                destination=ch_address,
+            )
+
+            self.assertEqual(
+                len(sensor_socket.sent),
+                1,
+            )
+
+            join_raw, join_destination = sensor_socket.sent[-1]
+
+            self.assertEqual(
+                join_destination,
+                ch_address,
+            )
+
+            # ---------------------------------------------------------
+            # 3. Deliver JOIN to the Cluster Head
+            # ---------------------------------------------------------
+            cluster_head.receive_datagram(
+                join_raw,
+                sensor_address,
+            )
+
+            self.assertTrue(
+                wait_until(
+                    lambda: ch_neighbor_module.has_neighbor(
+                        sensor_address[0],
+                        sensor_address[1],
+                    )
+                )
+            )
+
+            ch_sensor = ch_neighbor_module.get_neighbor(
+                sensor_address[0],
+                sensor_address[1],
+            )
+
+            self.assertEqual(
+                ch_sensor.node_role,
+                NodeRole.SENSOR_NODE,
+            )
+
+            self.assertEqual(
+                ch_sensor.association_state,
+                AssociationState.JOIN_PENDING,
+            )
+
+            self.assertEqual(
+                ch_sensor.join_id,
+                15,
+            )
+
+            # ---------------------------------------------------------
+            # 4. CH automatically sends JOIN_ACCEPT
+            # ---------------------------------------------------------
+            self.assertTrue(
+                wait_until(
+                    lambda: len(ch_socket.sent) >= 1
+                )
+            )
+
+            join_accept_raw, join_accept_destination = ch_socket.sent[-1]
+
+            self.assertEqual(
+                join_accept_destination,
+                sensor_address,
+            )
+
+            parsed_join_accept = parse_datagram(
+                join_accept_raw
+            )
+
+            self.assertEqual(
+                parsed_join_accept.packet_type,
+                PacketType.JOIN_ACCEPT,
+            )
+
+            self.assertEqual(
+                parsed_join_accept.payload["join_id"],
+                15,
+            )
+
+            self.assertEqual(
+                parsed_join_accept.payload["rejected"],
+                0,
+            )
+
+            # ---------------------------------------------------------
+            # 5. Deliver JOIN_ACCEPT back to the Sensor
+            # ---------------------------------------------------------
+            sensor.receive_datagram(
+                join_accept_raw,
+                ch_address,
+            )
+
+            self.assertTrue(
+                wait_until(
+                    lambda: (
+                        sensor_neighbor_module.get_neighbor(
+                            ch_address[0],
+                            ch_address[1],
+                        ).association_state
+                        == AssociationState.ASSOCIATED
+                    )
+                )
+            )
+
+            sensor_ch = sensor_neighbor_module.get_neighbor(
+                ch_address[0],
+                ch_address[1],
+            )
+
+            self.assertEqual(
+                sensor_ch.association_state,
+                AssociationState.ASSOCIATED,
+            )
+
+        finally:
+            sensor.stop()
+            cluster_head.stop()
+
+    def test_sensor_data_after_join_reaches_cluster_head(self):
+        sensor_socket = FakeSocketInterface()
+        ch_socket = FakeSocketInterface()
+
+        sensor_neighbor_module = NeighborModule()
+        ch_neighbor_module = NeighborModule()
+
+        sensor = CommunicationModule(
+            sensor_socket,
+            role=0,
+            neighbor_module=sensor_neighbor_module,
+            auto_start=True,
+            poll_interval=0.01,
+        )
+
+        cluster_head = CommunicationModule(
+            ch_socket,
+            role=1,
+            neighbor_module=ch_neighbor_module,
+            auto_start=True,
+            poll_interval=0.01,
+        )
+
+        sensor_address = ("10.0.0.4", 5000)
+        ch_address = ("10.0.0.5", 5000)
+
+        try:
+            # Establish the Sensor -> CH membership.
+            sensor_neighbor_module.start_join(
+                ip_address=ch_address[0],
+                port=ch_address[1],
+                join_id=15,
+                model_id=2,
+            )
+
+            join_raw = sensor.send_message(
+                {
+                    "packet_type": PacketType.JOIN,
+                    "role": 0,
+                    "join_id": 15,
+                    "model_id": 2,
+                },
+                destination=ch_address,
+            )
+
+            cluster_head.receive_datagram(
+                join_raw,
+                sensor_address,
+            )
+
+            self.assertTrue(
+                wait_until(
+                    lambda: len(ch_socket.sent) >= 1
+                )
+            )
+
+            join_accept_raw, _ = ch_socket.sent[-1]
+
+            sensor.receive_datagram(
+                join_accept_raw,
+                ch_address,
+            )
+
+            self.assertTrue(
+                wait_until(
+                    lambda: (
+                        sensor_neighbor_module.get_neighbor(
+                            ch_address[0],
+                            ch_address[1],
+                        ).association_state
+                        == AssociationState.ASSOCIATED
+                    )
+                )
+            )
+
+            # Send SENSOR_DATA after association.
+            sensor.send_message(
+                {
+                    "packet_type": PacketType.SENSOR_DATA,
+                    "role": 0,
+                    "data_id": 20,
+                    "payload": b"TEST_SENSOR_DATA",
+                },
+                destination=ch_address,
+            )
+
+            self.assertTrue(
+                len(sensor_socket.sent) >= 2
+            )
+
+            # The reliable SENSOR_DATA fragments are sent through
+            # the Sensor's socket.
+            sensor_data_packets = [
+                item
+                for item in sensor_socket.sent
+                if parse_datagram(item[0]).packet_type == PacketType.SENSOR_DATA
+            ]
+
+            self.assertTrue(len(sensor_data_packets) >= 1)
+
+            sensor_data_raw, sensor_data_destination = sensor_data_packets[0]
+
+            self.assertEqual(
+                sensor_data_destination,
+                ch_address,
+            )
+
+            # Deliver SENSOR_DATA to the CH.
+            cluster_head.receive_datagram(
+                sensor_data_raw,
+                sensor_address,
+            )
+
+
+            # Deliver SENSOR_DATA to the CH.
+            cluster_head.receive_datagram(
+                sensor_data_raw,
+                sensor_address,
+            )
+
+            self.assertTrue(
+                wait_until(
+                    lambda: ch_neighbor_module.get_neighbor(
+                        sensor_address[0],
+                        sensor_address[1],
+                    ).association_state
+                    == AssociationState.ASSOCIATED
+                )
+            )
+
+            sensor_neighbor = ch_neighbor_module.get_neighbor(
+                sensor_address[0],
+                sensor_address[1],
+            )
+
+            self.assertIsNotNone(sensor_neighbor)
+
+            self.assertEqual(
+                sensor_neighbor.node_role,
+                NodeRole.SENSOR_NODE,
+            )
+
+            self.assertEqual(
+                sensor_neighbor.association_state,
+                AssociationState.ASSOCIATED,
+            )
+
+            # Verify that the reassembled SENSOR_DATA was delivered.
+            delivered = cluster_head.pop_sensor_messages()
+
+            self.assertTrue(len(delivered) >= 1)
+
+            packet = delivered[0]
+
+            self.assertEqual(
+                packet["packet_type"],
+                PacketType.SENSOR_DATA,
+            )
+
+            self.assertEqual(
+                packet["payload"],
+                b"TEST_SENSOR_DATA",
+            )
+
+
+        finally:
+            sensor.stop()
+            cluster_head.stop()
+
+    def test_two_sensors_one_cluster_head(self):
+        sensor1_socket = FakeSocketInterface()
+        sensor2_socket = FakeSocketInterface()
+        ch_socket = FakeSocketInterface()
+
+        sensor1_neighbor_module = NeighborModule()
+        sensor2_neighbor_module = NeighborModule()
+        ch_neighbor_module = NeighborModule()
+
+        sensor1 = CommunicationModule(
+            sensor1_socket,
+            role=0,
+            neighbor_module=sensor1_neighbor_module,
+            auto_start=True,
+            poll_interval=0.01,
+        )
+
+        sensor2 = CommunicationModule(
+            sensor2_socket,
+            role=0,
+            neighbor_module=sensor2_neighbor_module,
+            auto_start=True,
+            poll_interval=0.01,
+        )
+
+        cluster_head = CommunicationModule(
+            ch_socket,
+            role=1,
+            neighbor_module=ch_neighbor_module,
+            auto_start=True,
+            poll_interval=0.01,
+        )
+
+        sensor1_address = ("10.0.0.4", 5000)
+        sensor2_address = ("10.0.0.6", 5000)
+        ch_address = ("10.0.0.5", 5000)
+
+        try:
+            # Both Sensors discover the same Cluster Head.
+            hello = serialize_message({
+                "packet_type": PacketType.HELLO,
+                "role": 1,
+                "sequence_number": 1,
+                "model_id": 2,
+            })
+
+            sensor1.receive_datagram(
+                hello,
+                ch_address,
+            )
+
+            sensor2.receive_datagram(
+                hello,
+                ch_address,
+            )
+
+            self.assertTrue(
+                wait_until(
+                    lambda: (
+                        sensor1_neighbor_module.has_neighbor(
+                            ch_address[0],
+                            ch_address[1],
+                        )
+                        and sensor2_neighbor_module.has_neighbor(
+                            ch_address[0],
+                            ch_address[1],
+                        )
+                    )
+                )
+            )
+
+            # Start independent JOIN states.
+            sensor1_neighbor_module.start_join(
+                ip_address=ch_address[0],
+                port=ch_address[1],
+                join_id=101,
+                model_id=2,
+            )
+
+            sensor2_neighbor_module.start_join(
+                ip_address=ch_address[0],
+                port=ch_address[1],
+                join_id=202,
+                model_id=2,
+            )
+
+            # Sensor 1 sends JOIN.
+            join1_raw = sensor1.send_message(
+                {
+                    "packet_type": PacketType.JOIN,
+                    "role": 0,
+                    "join_id": 101,
+                    "model_id": 2,
+                },
+                destination=ch_address,
+            )
+
+            cluster_head.receive_datagram(
+                join1_raw,
+                sensor1_address,
+            )
+
+            # Sensor 2 sends JOIN.
+            join2_raw = sensor2.send_message(
+                {
+                    "packet_type": PacketType.JOIN,
+                    "role": 0,
+                    "join_id": 202,
+                    "model_id": 2,
+                },
+                destination=ch_address,
+            )
+
+            cluster_head.receive_datagram(
+                join2_raw,
+                sensor2_address,
+            )
+
+            # Both Sensors should exist independently in the CH table.
+            self.assertTrue(
+                wait_until(
+                    lambda: (
+                        ch_neighbor_module.has_neighbor(
+                            sensor1_address[0],
+                            sensor1_address[1],
+                        )
+                        and ch_neighbor_module.has_neighbor(
+                            sensor2_address[0],
+                            sensor2_address[1],
+                        )
+                    )
+                )
+            )
+
+            sensor1_neighbor = ch_neighbor_module.get_neighbor(
+                sensor1_address[0],
+                sensor1_address[1],
+            )
+
+            sensor2_neighbor = ch_neighbor_module.get_neighbor(
+                sensor2_address[0],
+                sensor2_address[1],
+            )
+
+            self.assertEqual(
+                sensor1_neighbor.node_role,
+                NodeRole.SENSOR_NODE,
+            )
+
+            self.assertEqual(
+                sensor2_neighbor.node_role,
+                NodeRole.SENSOR_NODE,
+            )
+
+            self.assertEqual(
+                sensor1_neighbor.association_state,
+                AssociationState.JOIN_PENDING,
+            )
+
+            self.assertEqual(
+                sensor2_neighbor.association_state,
+                AssociationState.JOIN_PENDING,
+            )
+
+            self.assertEqual(
+                sensor1_neighbor.join_id,
+                101,
+            )
+
+            self.assertEqual(
+                sensor2_neighbor.join_id,
+                202,
+            )
+
+            # CH should have generated two JOIN_ACCEPT messages.
+            self.assertTrue(
+                wait_until(
+                    lambda: len(ch_socket.sent) >= 2
+                )
+            )
+
+            join_accept_packets = [
+                parse_datagram(raw)
+                for raw, _ in ch_socket.sent
+                if parse_datagram(raw).packet_type == PacketType.JOIN_ACCEPT
+            ]
+
+            self.assertEqual(
+                len(join_accept_packets),
+                2,
+            )
+
+            join_accept_ids = {
+                packet.payload["join_id"]
+                for packet in join_accept_packets
+            }
+
+            self.assertEqual(
+                join_accept_ids,
+                {101, 202},
+            )
+
+            # Deliver each JOIN_ACCEPT to the correct Sensor.
+            for raw, destination in ch_socket.sent:
+                parsed = parse_datagram(raw)
+
+                if parsed.packet_type != PacketType.JOIN_ACCEPT:
+                    continue
+
+                join_id = parsed.payload["join_id"]
+
+                if join_id == 101:
+                    sensor1.receive_datagram(
+                        raw,
+                        ch_address,
+                    )
+                elif join_id == 202:
+                    sensor2.receive_datagram(
+                        raw,
+                        ch_address,
+                    )
+
+            # Both Sensors should become associated.
+            self.assertTrue(
+                wait_until(
+                    lambda: (
+                        sensor1_neighbor_module.get_neighbor(
+                            ch_address[0],
+                            ch_address[1],
+                        ).association_state
+                        == AssociationState.ASSOCIATED
+                        and
+                        sensor2_neighbor_module.get_neighbor(
+                            ch_address[0],
+                            ch_address[1],
+                        ).association_state
+                        == AssociationState.ASSOCIATED
+                    )
+                )
+            )
+
+            # Sensor 1 sends SENSOR_DATA.
+            sensor1.send_message(
+                {
+                    "packet_type": PacketType.SENSOR_DATA,
+                    "role": 0,
+                    "data_id": 30,
+                    "payload": b"SENSOR_1_DATA",
+                },
+                destination=ch_address,
+            )
+
+            # Sensor 2 sends SENSOR_DATA.
+            sensor2.send_message(
+                {
+                    "packet_type": PacketType.SENSOR_DATA,
+                    "role": 0,
+                    "data_id": 31,
+                    "payload": b"SENSOR_2_DATA",
+                },
+                destination=ch_address,
+            )
+
+            sensor1_data = [
+                item
+                for item in sensor1_socket.sent
+                if parse_datagram(item[0]).packet_type
+                == PacketType.SENSOR_DATA
+            ]
+
+            sensor2_data = [
+                item
+                for item in sensor2_socket.sent
+                if parse_datagram(item[0]).packet_type
+                == PacketType.SENSOR_DATA
+            ]
+
+            self.assertTrue(len(sensor1_data) >= 1)
+            self.assertTrue(len(sensor2_data) >= 1)
+
+            # Deliver Sensor 1 data to the CH.
+            cluster_head.receive_datagram(
+                sensor1_data[0][0],
+                sensor1_address,
+            )
+
+            # Deliver Sensor 2 data to the CH.
+            cluster_head.receive_datagram(
+                sensor2_data[0][0],
+                sensor2_address,
+            )
+
+            # Both CH-side Sensor entries should become associated.
+            self.assertTrue(
+                wait_until(
+                    lambda: (
+                        ch_neighbor_module.get_neighbor(
+                            sensor1_address[0],
+                            sensor1_address[1],
+                        ).association_state
+                        == AssociationState.ASSOCIATED
+                        and
+                        ch_neighbor_module.get_neighbor(
+                            sensor2_address[0],
+                            sensor2_address[1],
+                        ).association_state
+                        == AssociationState.ASSOCIATED
+                    )
+                )
+            )
+
+            # Verify both data messages were delivered.
+            delivered = cluster_head.pop_sensor_messages()
+
+            self.assertEqual(
+                len(delivered),
+                2,
+            )
+
+            payloads = {
+                packet["payload"]
+                for packet in delivered
+            }
+
+            self.assertEqual(
+                payloads,
+                {
+                    b"SENSOR_1_DATA",
+                    b"SENSOR_2_DATA",
+                },
+            )
+
+        finally:
+            sensor1.stop()
+            sensor2.stop()
+            cluster_head.stop()
+
+    def test_cluster_head_model_update(self):
+        ch1_socket = FakeSocketInterface()
+        ch2_socket = FakeSocketInterface()
+
+        ch1_neighbor_module = NeighborModule()
+        ch2_neighbor_module = NeighborModule()
+
+        ch1 = CommunicationModule(
+            ch1_socket,
+            role=1,
+            neighbor_module=ch1_neighbor_module,
+            auto_start=True,
+            poll_interval=0.01,
+        )
+
+        ch2 = CommunicationModule(
+            ch2_socket,
+            role=1,
+            neighbor_module=ch2_neighbor_module,
+            auto_start=True,
+            poll_interval=0.01,
+        )
+
+        ch1_address = ("10.0.0.5", 5000)
+        ch2_address = ("10.0.0.7", 5000)
+
+        try:
+            # CH 1 discovers CH 2.
+            hello_from_ch2 = serialize_message({
+                "packet_type": PacketType.HELLO,
+                "role": 1,
+                "sequence_number": 1,
+                "model_id": 2,
+            })
+
+            ch1.receive_datagram(
+                hello_from_ch2,
+                ch2_address,
+            )
+
+            # CH 2 discovers CH 1.
+            hello_from_ch1 = serialize_message({
+                "packet_type": PacketType.HELLO,
+                "role": 1,
+                "sequence_number": 2,
+                "model_id": 3,
+            })
+
+            ch2.receive_datagram(
+                hello_from_ch1,
+                ch1_address,
+            )
+
+            self.assertTrue(
+                wait_until(
+                    lambda: (
+                        ch1_neighbor_module.has_neighbor(
+                            ch2_address[0],
+                            ch2_address[1],
+                        )
+                        and
+                        ch2_neighbor_module.has_neighbor(
+                            ch1_address[0],
+                            ch1_address[1],
+                        )
+                    )
+                )
+            )
+
+            # Verify that CH-to-CH neighbors remain DISCOVERED.
+            ch1_neighbor = ch1_neighbor_module.get_neighbor(
+                ch2_address[0],
+                ch2_address[1],
+            )
+
+            ch2_neighbor = ch2_neighbor_module.get_neighbor(
+                ch1_address[0],
+                ch1_address[1],
+            )
+
+            self.assertEqual(
+                ch1_neighbor.node_role,
+                NodeRole.CLUSTER_HEAD,
+            )
+
+            self.assertEqual(
+                ch2_neighbor.node_role,
+                NodeRole.CLUSTER_HEAD,
+            )
+
+            self.assertEqual(
+                ch1_neighbor.association_state,
+                AssociationState.DISCOVERED,
+            )
+
+            self.assertEqual(
+                ch2_neighbor.association_state,
+                AssociationState.DISCOVERED,
+            )
+
+            self.assertEqual(
+                ch1_neighbor.model_id,
+                2,
+            )
+
+            self.assertEqual(
+                ch2_neighbor.model_id,
+                3,
+            )
+
+            # CH 1 sends a MODEL_UPDATE to CH 2.
+            model_payload = b"MODEL_UPDATE_TEST"
+
+            ch1.send_message(
+                {
+                    "packet_type": PacketType.MODEL_UPDATE,
+                    "role": 1,
+                    "model_id": 3,
+                    "update_id": 40,
+                    "payload": model_payload,
+                },
+                destination=ch2_address,
+            )
+
+            model_update_packets = [
+                item
+                for item in ch1_socket.sent
+                if parse_datagram(item[0]).packet_type
+                == PacketType.MODEL_UPDATE
+            ]
+
+            self.assertTrue(
+                len(model_update_packets) >= 1
+            )
+
+            model_update_raw, model_update_destination = (
+                model_update_packets[0]
+            )
+
+            self.assertEqual(
+                model_update_destination,
+                ch2_address,
+            )
+
+            # Deliver the MODEL_UPDATE to CH 2.
+            ch2.receive_datagram(
+                model_update_raw,
+                ch1_address,
+            )
+
+            # Verify that the model update reached the FL buffer.
+            self.assertTrue(
+                wait_until(
+                    lambda: len(ch2.fl_buffer) >= 1
+                )
+            )
+
+            delivered = ch2.pop_fl_messages()
+
+            self.assertEqual(
+                delivered[0]["packet_type"],
+                PacketType.MODEL_UPDATE,
+            )
+
+            self.assertEqual(
+                delivered[0]["payload"],
+                model_payload,
+            )
+
+            # CH-to-CH relationship must remain DISCOVERED.
+            ch1_neighbor = ch1_neighbor_module.get_neighbor(
+                ch2_address[0],
+                ch2_address[1],
+            )
+
+            self.assertEqual(
+                ch1_neighbor.association_state,
+                AssociationState.DISCOVERED,
+            )
+
+        finally:
+            ch1.stop()
+            ch2.stop()
+
+    def test_cluster_head_large_model_update_reassembly(self):
+        ch1_socket = FakeSocketInterface()
+        ch2_socket = FakeSocketInterface()
+
+        ch1 = CommunicationModule(
+            ch1_socket,
+            role=1,
+            auto_start=True,
+            poll_interval=0.01,
+        )
+
+        ch2 = CommunicationModule(
+            ch2_socket,
+            role=1,
+            auto_start=True,
+            poll_interval=0.01,
+        )
+
+        ch1_address = ("10.0.0.5", 5000)
+        ch2_address = ("10.0.0.7", 5000)
+
+        try:
+            model_payload = b"M" * 2500
+
+            ch1.send_message(
+                {
+                    "packet_type": PacketType.MODEL_UPDATE,
+                    "role": 1,
+                    "model_id": 3,
+                    "update_id": 41,
+                    "payload": model_payload,
+                },
+                destination=ch2_address,
+            )
+
+            # The initial reliability window is 2,
+            # so only blocks 0 and 1 are transmitted immediately.
+            model_update_packets = [
+                item
+                for item in ch1_socket.sent
+                if parse_datagram(item[0]).packet_type
+                == PacketType.MODEL_UPDATE
+            ]
+
+            self.assertEqual(len(model_update_packets), 2)
+
+            parsed_fragments = [
+                parse_datagram(item[0]).payload
+                for item in model_update_packets
+            ]
+
+            self.assertEqual(
+                [fragment["block_number"] for fragment in parsed_fragments],
+                [0, 1],
+            )
+
+            self.assertEqual(
+                [
+                    len(fragment["payload"])
+                    for fragment in parsed_fragments
+                ],
+                [1024, 1024],
+            )
+
+            self.assertEqual(
+                [fragment["last_block_number"] for fragment in parsed_fragments],
+                [2, 2],
+            )
+
+            # Deliver blocks 0 and 1 to CH2.
+            for raw, _destination in model_update_packets:
+                ch2.receive_datagram(
+                    raw,
+                    source_address=ch1_address,
+                )
+
+            # CH2 should acknowledge the received window.
+            self.assertTrue(
+                wait_until(
+                    lambda: any(
+                        parse_datagram(item[0]).packet_type
+                        == PacketType.MODEL_UPDATE_ACK
+                        for item in ch2_socket.sent
+                    )
+                )
+            )
+
+            ack_packet = next(
+                item
+                for item in ch2_socket.sent
+                if parse_datagram(item[0]).packet_type
+                == PacketType.MODEL_UPDATE_ACK
+            )
+
+            parsed_ack = parse_datagram(ack_packet[0]).payload
+
+            self.assertEqual(parsed_ack["update_id"], 41)
+            self.assertEqual(parsed_ack["window_start"], 0)
+            self.assertEqual(parsed_ack["window_end"], 1)
+            self.assertEqual(parsed_ack["received_blocks"], [0, 1])
+
+            # Deliver the ACK back to CH1.
+            ch1.receive_datagram(
+                ack_packet[0],
+                source_address=ch2_address,
+            )
+
+            # CH1 should transmit the remaining block 2.
+            self.assertTrue(
+                wait_until(
+                    lambda: len(
+                        [
+                            item
+                            for item in ch1_socket.sent
+                            if parse_datagram(item[0]).packet_type
+                            == PacketType.MODEL_UPDATE
+                        ]
+                    )
+                    == 3
+                )
+            )
+
+            all_model_update_packets = [
+                item
+                for item in ch1_socket.sent
+                if parse_datagram(item[0]).packet_type
+                == PacketType.MODEL_UPDATE
+            ]
+
+            final_fragment = parse_datagram(
+                all_model_update_packets[2][0]
+            ).payload
+
+            self.assertEqual(final_fragment["block_number"], 2)
+            self.assertEqual(final_fragment["last_block_number"], 2)
+            self.assertEqual(len(final_fragment["payload"]), 452)
+
+            # Deliver the final fragment to CH2.
+            ch2.receive_datagram(
+                all_model_update_packets[2][0],
+                source_address=ch1_address,
+            )
+
+            # CH2 should now have the complete reassembled model update.
+            self.assertTrue(
+                wait_until(
+                    lambda: len(ch2.fl_buffer.items) > 0
+                )
+            )
+
+            delivered = ch2.pop_fl_messages()
+
+            self.assertEqual(len(delivered), 1)
+            self.assertEqual(
+                delivered[0]["packet_type"],
+                PacketType.MODEL_UPDATE,
+            )
+            self.assertEqual(delivered[0]["model_id"], 3)
+            self.assertEqual(delivered[0]["update_id"], 41)
+            self.assertEqual(delivered[0]["payload"], model_payload)
+
+        finally:
+            ch1.stop()
+            ch2.stop()
+
+
 
 
 
@@ -755,6 +1817,7 @@ class SendMessageTests(unittest.TestCase):
             destination=("10.0.0.5", 9000),
         )
         self.assertEqual(raw[0] >> 4, 2)
+
 
 
 class ControllerIntegrationTests(unittest.TestCase):
