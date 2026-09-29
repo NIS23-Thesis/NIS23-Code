@@ -12,7 +12,7 @@ from flame.communication import CommunicationModule, PacketType, SocketInterface
 # NETWORK CONFIGURATION
 # ============================================================
 
-CH_IP = "192.168.254.120"
+CH_IP = "192.168.0.101"
 CH_PORT = 5000
 
 SENSOR_PORT = 5001
