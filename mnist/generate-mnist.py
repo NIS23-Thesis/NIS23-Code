@@ -1,4 +1,9 @@
 '''
+
+This code allows the user to generate the MNIST dataset from the original 
+npz file. The generated images are saved in a folder structure that is 
+compatible with PyTorch's ImageFolder dataset class.
+
 File structure: 
 <directory of your choice>/
 └── nmist/
