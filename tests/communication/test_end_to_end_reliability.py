@@ -253,6 +253,63 @@ class EndToEndReliabilityTests(unittest.TestCase):
         self.assertEqual((first["payload"], second["payload"]), (b"old", b"new"))
         self.assertNotEqual(first["sequence_number"], second["sequence_number"])
 
+    def test_9_two_sensor_nodes_send_same_transfer_identity_independently(self):
+        second_socket = self.network.socket(("sensor-two", 10003))
+        second_sensor = CommunicationModule(
+            second_socket,
+            role=0,
+            auto_start=True,
+            poll_interval=0.001,
+            ack_timeout=0.08,
+            ack_delay=0.015,
+            reassembly_timeout=0.5,
+            completed_retention=0.5,
+            max_retries=2,
+        )
+        payloads = {
+            self.sensor_socket.address: b"sensor-one" * 400,
+            second_socket.address: b"sensor-two" * 500,
+        }
+        try:
+            senders = [
+                threading.Thread(
+                    target=sensor.send_message,
+                    args=(
+                        {
+                            "packet_type": PacketType.SENSOR_DATA,
+                            "role": 0,
+                            "data_id": 42,
+                            "sensor_type": 1,
+                            "payload": payload,
+                        },
+                    ),
+                    kwargs={"destination": self.cluster_socket.address},
+                )
+                for sensor, payload in (
+                    (self.sensor, payloads[self.sensor_socket.address]),
+                    (second_sensor, payloads[second_socket.address]),
+                )
+            ]
+            for sender in senders:
+                sender.start()
+            for sender in senders:
+                sender.join(timeout=1.0)
+
+            self.assertTrue(self.delivered(count=2))
+            received = self.cluster.pop_sensor_messages()
+            by_source = {
+                message["source_address"]: message["payload"]
+                for message in received
+            }
+            self.assertEqual(by_source, payloads)
+            self.assertEqual(
+                {message["sequence_number"] for message in received},
+                {0},
+            )
+            self.assertEqual({message["data_id"] for message in received}, {42})
+        finally:
+            second_sensor.stop()
+
 
 class ModelUpdateEndToEndTests(unittest.TestCase):
     def test_cluster_heads_exchange_fragmented_model_update(self):

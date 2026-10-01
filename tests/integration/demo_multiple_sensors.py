@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+import threading
 from pathlib import Path
 
 import numpy as np
@@ -28,10 +29,10 @@ CURRENT_PATH = Path(__file__).resolve()
 PROJECT_ROOT = next(
     parent
     for parent in CURRENT_PATH.parents
-    if (parent / "nmist").is_dir()
+    if (parent / "mnist").is_dir()
 )
 
-MNIST_FILE = PROJECT_ROOT / "nmist" / "mnist.npz"
+MNIST_FILE = PROJECT_ROOT / "mnist" / "mnist.npz"
 
 if not MNIST_FILE.exists():
     raise FileNotFoundError(
@@ -511,68 +512,86 @@ def main() -> None:
         print("STEP 7: MULTIPLE SENSORS SEND MNIST SENSOR_DATA")
         print("-" * 60)
 
-        received_by_sensor = {}
+        send_errors = []
+        send_barrier = threading.Barrier(SENSOR_COUNT)
 
-        for sensor_id in range(1, SENSOR_COUNT + 1):
+        def send_sensor_data(sensor_id: int) -> None:
+            """Start one Sensor transfer at the same time as its peers."""
             sensor = sensors[sensor_id]["communication"]
-            sensor_socket = sensors[sensor_id]["socket"]
-
             payload = sensor_data[sensor_id]["payload"]
 
-            print(
-                f"\n[SENSOR {sensor_id}] "
-                f"Starting SENSOR_DATA id=1"
-            )
-
-            print(
-                f"[SENSOR {sensor_id}] "
-                f"Application payload: "
-                f"{len(payload)} bytes"
-            )
-
-            sensor.send_message(
-                {
-                    "packet_type": PacketType.SENSOR_DATA,
-                    "role": 0,
-                    "data_id": 1,
-                    "sensor_type": 1,
-                    "payload": payload,
-                },
-                destination=cluster_socket.address,
-            )
-
-            # Wait until this Sensor's complete message
-            # reaches the CH's Sensor buffer.
-            if not wait_until(
-                lambda: any(
-                    message["source_address"]
-                    == sensor_socket.address
-                    for message in cluster.sensor_buffer.items
+            try:
+                send_barrier.wait()
+                print(
+                    f"\n[SENSOR {sensor_id}] "
+                    f"Starting SENSOR_DATA id=1"
                 )
-            ):
-                raise RuntimeError(
-                    f"CH did not receive data from SENSOR {sensor_id}."
+                print(
+                    f"[SENSOR {sensor_id}] "
+                    f"Application payload: "
+                    f"{len(payload)} bytes"
                 )
+                sensor.send_message(
+                    {
+                        "packet_type": PacketType.SENSOR_DATA,
+                        "role": 0,
+                        "data_id": 1,
+                        "sensor_type": 1,
+                        "payload": payload,
+                    },
+                    destination=cluster_socket.address,
+                )
+            except Exception as error:
+                send_errors.append((sensor_id, error))
 
-            # Find and remove the message belonging to this Sensor.
-            messages = cluster.sensor_buffer.items
+        send_threads = [
+            threading.Thread(
+                target=send_sensor_data,
+                args=(sensor_id,),
+                name=f"sensor-{sensor_id}-sender",
+            )
+            for sensor_id in range(1, SENSOR_COUNT + 1)
+        ]
 
-            received_message = next(
-                message
-                for message in messages
-                if message["source_address"] == sensor_socket.address
+        for thread in send_threads:
+            thread.start()
+        for thread in send_threads:
+            thread.join(timeout=5.0)
+
+        if any(thread.is_alive() for thread in send_threads):
+            raise RuntimeError("A Sensor sender thread did not finish.")
+        if send_errors:
+            sensor_id, error = send_errors[0]
+            raise RuntimeError(
+                f"SENSOR {sensor_id} failed to send: {error}"
+            ) from error
+
+        # Wait until the CH has reassembled one complete message per Sensor.
+        if not wait_until(
+            lambda: len(cluster.sensor_buffer) >= SENSOR_COUNT
+        ):
+            raise RuntimeError(
+                "CH did not receive complete data from all Sensors."
             )
 
-            received_by_sensor[sensor_id] = received_message
+        received_by_sensor = {}
+        sensor_addresses = {
+            sensors[sensor_id]["socket"].address: sensor_id
+            for sensor_id in range(1, SENSOR_COUNT + 1)
+        }
 
+        for message in cluster.sensor_buffer.items:
+            sensor_id = sensor_addresses.get(message["source_address"])
+            if sensor_id is None:
+                continue
+            received_by_sensor[sensor_id] = message
             print(
                 f"[CH] Received complete SENSOR_DATA "
                 f"from SENSOR {sensor_id}"
             )
-
             print(
                 f"[CH] Reassembled payload: "
-                f"{len(received_message['payload'])} bytes"
+                f"{len(message['payload'])} bytes"
             )
 
         # print(

@@ -1,4 +1,5 @@
 import sys
+import socket
 import unittest
 from pathlib import Path
 
@@ -8,6 +9,17 @@ from flame.communication.socket_interface import SocketInterface
 
 
 class SocketInterfaceTests(unittest.TestCase):
+    def test_underlying_socket_is_udp_datagram_socket(self):
+        udp = SocketInterface(host="127.0.0.1", port=0, timeout=0.1)
+        try:
+            self.assertEqual(
+                udp.socket.getsockopt(socket.SOL_SOCKET, socket.SO_TYPE),
+                socket.SOCK_DGRAM,
+            )
+            self.assertEqual(udp.socket.family, socket.AF_INET)
+        finally:
+            udp.close()
+
     def test_send_and_receive_over_localhost(self):
         a = SocketInterface(host="127.0.0.1", port=0, timeout=1.0)
         b = SocketInterface(host="127.0.0.1", port=0, timeout=1.0)

@@ -24,10 +24,10 @@ CURRENT_PATH = Path(__file__).resolve()
 PROJECT_ROOT = next(
     parent
     for parent in CURRENT_PATH.parents
-    if (parent / "nmist").is_dir()
+    if (parent / "mnist").is_dir()
 )
 
-MNIST_DIR = PROJECT_ROOT / "nmist"
+MNIST_DIR = PROJECT_ROOT / "mnist"
 MNIST_FILE = MNIST_DIR / "mnist.npz"
 
 if not MNIST_DIR.exists():

@@ -202,6 +202,20 @@ class ReliabilityManager:
             sequence_number=sequence_number,
         )
 
+    @staticmethod
+    def _next_window_size(
+        window_size: int,
+        *,
+        loss_in_window: bool,
+        reduced_window_size: Optional[int],
+        min_window_size: int,
+        max_window_size: int,
+    ) -> int:
+        """Apply AIMD once a window has completed."""
+        if loss_in_window:
+            return reduced_window_size or min_window_size
+        return min(window_size + 1, max_window_size)
+
     def register_transfer(
         self,
         destination_address: Address,
@@ -327,10 +341,13 @@ class ReliabilityManager:
                     window_end=previous_end,
                 )
 
-            if transfer.loss_in_window:
-                next_size = transfer.reduced_window_size or transfer.min_window_size
-            else:
-                next_size = min(transfer.window_size + 1, transfer.max_window_size)
+            next_size = self._next_window_size(
+                transfer.window_size,
+                loss_in_window=transfer.loss_in_window,
+                reduced_window_size=transfer.reduced_window_size,
+                min_window_size=transfer.min_window_size,
+                max_window_size=transfer.max_window_size,
+            )
 
             transfer.window_size = next_size
             transfer.window_start = next_start
@@ -425,6 +442,8 @@ class ReliabilityManager:
         sequence_number = packet["sequence_number"]
         block_number = packet["block_number"]
         last_block_number = packet["last_block_number"]
+        if not 0 <= block_number <= last_block_number <= 0xFFFF:
+            raise ValueError("Fragment block number must be within its transfer bounds.")
         metadata_value = packet.get("sensor_type", packet.get("model_id"))
         key = self.make_key(source_address, packet_type, message_id, sequence_number)
 
@@ -476,7 +495,10 @@ class ReliabilityManager:
         acknowledgements = self._advance_complete_inbound_windows(transfer)
 
         complete_fragments = None
-        if len(transfer.fragments) == transfer.last_block_number + 1:
+        if all(
+            block in transfer.fragments
+            for block in range(transfer.last_block_number + 1)
+        ):
             complete_fragments = [
                 transfer.fragments[block]
                 for block in range(transfer.last_block_number + 1)
@@ -507,10 +529,13 @@ class ReliabilityManager:
             acknowledgements.append(ack)
             old_end = transfer.window_end
 
-            if transfer.loss_in_window:
-                next_size = transfer.reduced_window_size or transfer.min_window_size
-            else:
-                next_size = min(transfer.window_size + 1, transfer.max_window_size)
+            next_size = self._next_window_size(
+                transfer.window_size,
+                loss_in_window=transfer.loss_in_window,
+                reduced_window_size=transfer.reduced_window_size,
+                min_window_size=transfer.min_window_size,
+                max_window_size=transfer.max_window_size,
+            )
 
             transfer.window_size = next_size
             transfer.window_start = old_end + 1

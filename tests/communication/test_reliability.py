@@ -1,5 +1,6 @@
 import sys
 import unittest
+import logging
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -7,10 +8,204 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from flame.communication.message import PacketType, fragment_payload
 from flame.communication.reliability import (
     MIN_WINDOW_SIZE,
-    ReliabilityManager,
+    ReliabilityManager as BaseReliabilityManager,
     prepare_fragments,
 )
 
+
+# ============================================================
+# LOGGING CONFIGURATION
+# ============================================================
+
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(asctime)s | %(levelname)-7s | %(message)s",
+    datefmt="%H:%M:%S",
+    stream=sys.stdout,
+    force=True,
+)
+
+logger = logging.getLogger("reliability")
+
+
+# ============================================================
+# RELIABILITY MANAGER WITH LOGGING
+# ============================================================
+
+class ReliabilityManager(BaseReliabilityManager):
+    """
+    Extends the original ReliabilityManager to display
+    reliability events without modifying its implementation.
+    """
+
+    @staticmethod
+    def log_action(event, action):
+        if action is None:
+            return
+
+        blocks = [
+            block
+            for block, _ in getattr(action, "datagrams", [])
+        ]
+
+        logger.info(
+            "[%s] window=%s-%s | sent=%s | "
+            "advanced=%s | completed=%s | failed=%s",
+            event,
+            getattr(action, "window_start", None),
+            getattr(action, "window_end", None),
+            blocks,
+            getattr(action, "window_advanced", False),
+            getattr(action, "completed", False),
+            getattr(action, "failed", False),
+        )
+
+    def register_transfer(self, *args, **kwargs):
+        key = super().register_transfer(*args, **kwargs)
+
+        logger.info(
+            "[REGISTER] transfer=%s | fragments=%s",
+            key,
+            sorted(kwargs.get("fragments", {})),
+        )
+
+        return key
+
+    def start_transfer(self, key, *args, **kwargs):
+        logger.info(
+            "[START TRANSFER] transfer=%s",
+            key,
+        )
+
+        action = super().start_transfer(
+            key, *args, **kwargs
+        )
+
+        self.log_action("INITIAL WINDOW", action)
+
+        return action
+
+    def process_ack(self, *args, **kwargs):
+        received = (
+            args[6]
+            if len(args) > 6
+            else kwargs.get("received_blocks", [])
+        )
+
+        logger.info(
+            "[ACK RECEIVED] blocks=%s",
+            received,
+        )
+
+        action = super().process_ack(
+            *args, **kwargs
+        )
+
+        self.log_action("ACK RESULT", action)
+
+        return action
+
+    def service_outbound(self, *args, **kwargs):
+        actions = super().service_outbound(
+            *args, **kwargs
+        )
+
+        for action in actions:
+            if action.failed:
+                logger.warning(
+                    "[RETRY EXHAUSTED] Transfer failed"
+                )
+                self.log_action(
+                    "TRANSFER FAILED", action
+                )
+            else:
+                logger.warning(
+                    "[TIMEOUT] Retransmitting "
+                    "unacknowledged fragments"
+                )
+                self.log_action(
+                    "RETRANSMISSION", action
+                )
+
+        return actions
+
+    def receive_fragment(
+        self, peer, fragment, *args, **kwargs
+    ):
+        logger.info(
+            "[RECEIVE] block=%s | sequence=%s",
+            fragment["block_number"],
+            fragment["sequence_number"],
+        )
+
+        result = super().receive_fragment(
+            peer, fragment, *args, **kwargs
+        )
+
+        if result.duplicate:
+            logger.warning(
+                "[DUPLICATE] block=%s",
+                fragment["block_number"],
+            )
+
+        if result.accepted:
+            logger.info(
+                "[ACCEPTED] block=%s",
+                fragment["block_number"],
+            )
+
+        for ack in result.acknowledgements:
+            logger.info(
+                "[ACK SENT] window=%s-%s | "
+                "received=%s",
+                ack.window_start,
+                ack.window_end,
+                ack.received_blocks,
+            )
+
+        if result.complete_fragments is not None:
+            logger.info(
+                "[REASSEMBLY COMPLETE] "
+                "fragments=%s",
+                len(result.complete_fragments),
+            )
+
+        return result
+
+    def service_inbound(self, *args, **kwargs):
+        pending = super().service_inbound(
+            *args, **kwargs
+        )
+
+        for key, ack in pending:
+            logger.info(
+                "[DELAYED ACK] transfer=%s | "
+                "window=%s-%s | received=%s",
+                key,
+                ack.window_start,
+                ack.window_end,
+                ack.received_blocks,
+            )
+
+        return pending
+
+    def cleanup(self, *args, **kwargs):
+        expired = super().cleanup(
+            *args, **kwargs
+        )
+
+        for key in expired:
+            logger.warning(
+                "[REASSEMBLY EXPIRED] transfer=%s",
+                key,
+            )
+
+        return expired
+
+
+# ============================================================
+# TEST HELPERS
+# ============================================================
 
 DEST = ("127.0.0.1", 9000)
 
@@ -1013,6 +1208,34 @@ class OutboundWindowTests(unittest.TestCase):
         self.assertTrue(action.completed)
         self.assertFalse(manager.has_outbound_transfer(key))
 
+        key = register(
+            manager,
+            count=2,
+        )
+
+        manager.start_transfer(key, now=0.0)
+
+        action = manager.process_ack(
+            DEST,
+            PacketType.SENSOR_DATA,
+            7,
+            10,
+            0,
+            1,
+            [0, 1],
+            now=0.1,
+        )
+
+        self.assertTrue(action.completed)
+
+        self.assertFalse(
+            manager.has_outbound_transfer(key)
+        )
+
+
+# ============================================================
+# TIMEOUT TESTS
+# ============================================================
 
 class TimeoutTests(unittest.TestCase):
 
@@ -1050,7 +1273,6 @@ class TimeoutTests(unittest.TestCase):
             ack_delay=0.01,
             max_retries=1,
         )
-
         key = register(manager, retries=1)
 
         manager.start_transfer(key, now=0.0)
@@ -1067,6 +1289,10 @@ class TimeoutTests(unittest.TestCase):
             manager.has_outbound_transfer(key)
         )
 
+
+# ============================================================
+# INBOUND TESTS
+# ============================================================
 
 class InboundTests(unittest.TestCase):
 
@@ -1208,6 +1434,30 @@ class InboundTests(unittest.TestCase):
             {},
         )
 
+        manager.receive_fragment(
+            DEST,
+            sensor_fragment(0, 2),
+            now=0.0,
+        )
+
+        expired = manager.cleanup(
+            now=0.2
+        )
+
+        self.assertEqual(
+            len(expired),
+            1,
+        )
+
+        self.assertEqual(
+            manager.inbound_transfers,
+            {},
+        )
+
+
+# ============================================================
+# FRAGMENT HELPER TESTS
+# ============================================================
 
 class FragmentHelperTests(unittest.TestCase):
 
@@ -1235,4 +1485,7 @@ class FragmentHelperTests(unittest.TestCase):
 # ============================================================
 
 if __name__ == "__main__":
-    interactive_menu()
+    unittest.main(
+        verbosity=2,
+        buffer=False,
+    )

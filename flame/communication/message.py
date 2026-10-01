@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from enum import IntEnum
 
 
-MAX_FRAGMENT_PAYLOAD = 1024
+MAX_FRAGMENT_PAYLOAD = 1024 #size of the block
 MAX_BLOCK_NUMBER = 0xFFFF
 
 
