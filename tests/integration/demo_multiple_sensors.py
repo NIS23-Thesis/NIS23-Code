@@ -181,6 +181,29 @@ def save_mnist_images(
 
         Image.fromarray(image).save(image_path)
 
+def reconstruct_mnist_images(
+    payload: bytes,
+    image_count: int,
+) -> np.ndarray:
+    """Reconstruct MNIST images from a received payload."""
+
+    expected_size = image_count * 28 * 28
+
+    if len(payload) != expected_size:
+        raise ValueError(
+            f"Invalid MNIST payload size: "
+            f"expected {expected_size} bytes, "
+            f"received {len(payload)} bytes."
+        )
+
+    return np.frombuffer(
+        payload,
+        dtype=np.uint8,
+    ).reshape(
+        image_count,
+        28,
+        28,
+    )
 
 # ---------------------------------------------------------------------------
 # Main demonstration
@@ -234,6 +257,17 @@ def main() -> None:
             "labels": labels,
             "payload": payload,
         }
+
+        sensor_output_dir = (
+            MNIST_OUTPUT_DIR
+            / f"sensor_{sensor_id}"
+        )
+
+        save_mnist_images(
+            images,
+            labels,
+            sensor_output_dir / "sent",
+        )
 
         print(
             f"[SENSOR {sensor_id}] "
@@ -570,6 +604,21 @@ def main() -> None:
             received_message = received_by_sensor[sensor_id]
 
             received_payload = received_message["payload"]
+
+            received_images = reconstruct_mnist_images( 
+                received_payload, 
+                SAMPLES_PER_SENSOR, 
+            ) 
+            
+            save_mnist_images( 
+                received_images, 
+                sensor_data[sensor_id]["labels"], 
+                ( 
+                    MNIST_OUTPUT_DIR 
+                    / f"sensor_{sensor_id}" 
+                    / "received" 
+                ), 
+            )  
 
             payload_identical = (
                 original_payload
