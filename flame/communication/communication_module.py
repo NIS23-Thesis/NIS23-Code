@@ -83,6 +83,7 @@ class CommunicationModule:
         self,
         socket_interface: Any,
         *,
+        discovery_socket_interface: Any = None,
         role: Optional[int] = None,
         version: int = 1,
         buffer_size: int = 128,
@@ -107,6 +108,7 @@ class CommunicationModule:
             raise ValueError("Version must fit within 4 bits.")
 
         self.socket_interface = socket_interface
+        self.discovery_socket_interface = discovery_socket_interface
         self.role = role
         self.version = version
         self.poll_interval = poll_interval
@@ -318,7 +320,7 @@ class CommunicationModule:
         self.datagram_buffer.put(raw_bytes, source_address)
 
     def ingest_socket_once(self) -> bool:
-        # Read one datagram from the socket and queue it for processing.
+        # Read one datagram from the normal or discovery socket.
         if (
             self.poll_socket
             and self._thread
@@ -329,8 +331,13 @@ class CommunicationModule:
 
         with self._receive_lock:
             packet = self.socket_interface.recvfrom()
+
+            if packet is None and self.discovery_socket_interface is not None:
+                packet = self.discovery_socket_interface.recvfrom()
+
         if packet is None:
             return False
+
         raw_bytes, address = packet
         self.datagram_buffer.put(raw_bytes, address)
         return True
