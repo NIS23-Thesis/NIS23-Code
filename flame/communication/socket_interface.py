@@ -11,6 +11,7 @@ class SocketInterface:
     port: int = 0
     timeout: float = 0.1
     broadcast: bool = False
+    reuse_address: bool = False
 
     def __post_init__(self) -> None:
         self.socket = socket.socket(
@@ -24,6 +25,13 @@ class SocketInterface:
             self.socket.setsockopt(
                 socket.SOL_SOCKET,
                 socket.SO_BROADCAST,
+                1,
+            )
+
+        if self.reuse_address:
+            self.socket.setsockopt(
+                socket.SOL_SOCKET,
+                socket.SO_REUSEADDR,
                 1,
             )
 
