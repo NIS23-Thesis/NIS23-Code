@@ -10,21 +10,40 @@ class SocketInterface:
     host: str = "127.0.0.1"
     port: int = 0
     timeout: float = 0.1
+    broadcast: bool = False
 
     def __post_init__(self) -> None:
-        self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.socket = socket.socket(
+            socket.AF_INET,
+            socket.SOCK_DGRAM,
+        )
+
         self.socket.settimeout(self.timeout)
+
+        if self.broadcast:
+            self.socket.setsockopt(
+                socket.SOL_SOCKET,
+                socket.SO_BROADCAST,
+                1,
+            )
+
         self.socket.bind((self.host, self.port))
 
     @property
     def address(self) -> Tuple[str, int]:
-        return self.socket.getsockname() # Return the socket host and port.
+        return self.socket.getsockname()
 
-    def sendto(self, payload: bytes, address: Tuple[str, int]) -> int:
-        return self.socket.sendto(payload, address) # Send bytes to a UDP address.
+    def sendto(
+        self,
+        payload: bytes,
+        address: Tuple[str, int],
+    ) -> int:
+        return self.socket.sendto(payload, address)
 
-    def recvfrom(self, max_bytes: int = 4096) -> Optional[Tuple[bytes, Tuple[str, int]]]:
-        # Receive one datagram or return None on timeout.
+    def recvfrom(
+        self,
+        max_bytes: int = 4096,
+    ) -> Optional[Tuple[bytes, Tuple[str, int]]]:
         try:
             return self.socket.recvfrom(max_bytes)
         except socket.timeout:
