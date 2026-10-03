@@ -12,7 +12,7 @@ from flame.communication import (
 from flame.neighbor import NeighborModule
 
 CH_HOST = "127.0.0.1"
-CH_PORT = 50000
+CH_PORT = 0
 HELLO_PORT = 50010
 HELLO_INTERVAL = 5.0
 
