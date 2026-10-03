@@ -18,7 +18,8 @@ from flame.neighbor import (
 
 SENSOR_ID = 1
 SENSOR_HOST = "0.0.0.0"
-SENSOR_PORT = 50010
+SENSOR_PORT = 0
+HELLO_PORT = 50010
 
 
 def main() -> None:
@@ -32,10 +33,18 @@ def main() -> None:
         timeout=0.02,
     )
 
+    discovery_socket = SocketInterface(
+        host=SENSOR_HOST,
+        port=HELLO_PORT,
+        timeout=0.02,
+        reuse_address=True,
+    )
+
     neighbor = NeighborModule()
 
     sensor = CommunicationModule(
         socket,
+        discovery_socket_interface=discovery_socket,
         role=0,
         neighbor_module=neighbor,
     )
@@ -177,6 +186,7 @@ def main() -> None:
     finally:
         sensor.stop()
         socket.close()
+        discovery_socket.close()
 
 
 if __name__ == "__main__":
