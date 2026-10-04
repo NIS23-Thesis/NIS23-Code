@@ -55,6 +55,7 @@ def main() -> None:
 
     last_status = time.monotonic()
     join_sent = False
+    files_sent = False
     next_join_id = 0
 
     try:
@@ -137,24 +138,32 @@ def main() -> None:
                         f"timeout={message.get('timeout')}"
                     )
 
-                    if message.get("rejected") == 0:
+                    if message.get("rejected") == 0 and not files_sent:
                         print(
                             f"[SENSOR {SENSOR_ID}] "
-                            f"JOIN accepted. Sending SENSOR_DATA..."
+                            f"JOIN accepted. Sending two manifest-described files..."
                         )
 
-                        sensor.send_message(
-                            {
-                                "packet_type": PacketType.SENSOR_DATA,
-                                "role": 0,
-                                "data_id": 1,
-                                "sensor_type": 1,
-                                "block_number": 0,
-                                "last_block_number": 0,
-                                "payload": b"HELLO_FROM_SENSOR_1",
-                            },
+                        sensor.send_file_batch(
+                            [
+                                {
+                                    "data_id": 1,
+                                    "logical_name": "sensor-1-capture.png",
+                                    "file_bytes": b"\x89PNG\r\n\x1a\n" + b"P" * 1800,
+                                    "encoding": "png",
+                                },
+                                {
+                                    "data_id": 2,
+                                    "logical_name": "sensor-1-preview.jpg",
+                                    "file_bytes": b"\xff\xd8\xff" + b"J" * 700 + b"\xff\xd9",
+                                    "encoding": "jpeg",
+                                },
+                            ],
                             destination=source,
+                            sensor_type=1,
+                            batch_id="sensor-1-batch-1",
                         )
+                        files_sent = True
 
 
             neighbor.check_expired_neighbors()

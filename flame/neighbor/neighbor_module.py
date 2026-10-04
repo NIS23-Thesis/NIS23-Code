@@ -1,6 +1,8 @@
+import csv
 import time
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 from typing import Dict, List, Optional
 
 
@@ -29,6 +31,16 @@ class Neighbor:
 
 
 class NeighborModule:
+    CSV_COLUMNS = (
+        "IP Address",
+        "Port",
+        "Node Type",
+        "Association State",
+        "Last Heard",
+        "Expiration Time",
+        "Model ID",
+    )
+
     def __init__(self):
         self.neighbor_table: Dict[tuple[str, int], Neighbor] = {}
 
@@ -79,6 +91,55 @@ class NeighborModule:
 
     def get_neighbors(self) -> List[Neighbor]:
         return list(self.neighbor_table.values())
+
+    @staticmethod
+    def _format_time(timestamp: float) -> str:
+        return time.strftime("%H:%M:%S", time.localtime(timestamp))
+
+    @staticmethod
+    def _node_type_label(node_role: NodeRole) -> str:
+        if node_role == NodeRole.SENSOR_NODE:
+            return "Sensor Node"
+        if node_role == NodeRole.CLUSTER_HEAD:
+            return "Cluster Head"
+        return node_role.value
+
+    def export_csv(
+        self,
+        path: str | Path,
+        *,
+        current_time: Optional[float] = None,
+    ) -> Path:
+        """Export the current neighbor table, including inactive entries.
+
+        Expiration is checked immediately before writing so the resulting
+        file reflects the final association state at shutdown.  Entries stay
+        in ``neighbor_table``; this is an export of the existing state, not a
+        second neighbor database.
+        """
+        if current_time is None:
+            current_time = time.time()
+        self.check_expired_neighbors(current_time=current_time)
+
+        output_path = Path(path)
+        with output_path.open("w", newline="", encoding="utf-8") as csv_file:
+            writer = csv.DictWriter(csv_file, fieldnames=self.CSV_COLUMNS)
+            writer.writeheader()
+            for neighbor in self.get_neighbors():
+                writer.writerow(
+                    {
+                        "IP Address": neighbor.ip_address,
+                        "Port": neighbor.port,
+                        "Node Type": self._node_type_label(neighbor.node_role),
+                        "Association State": neighbor.association_state.value,
+                        "Last Heard": self._format_time(neighbor.last_heard),
+                        "Expiration Time": self._format_time(neighbor.expiration_time),
+                        "Model ID": (
+                            "N/A" if neighbor.model_id is None else neighbor.model_id
+                        ),
+                    }
+                )
+        return output_path
 
     def process_hello(
         self,

@@ -60,6 +60,7 @@ class TransmissionAction:
     window_advanced: bool = False
     window_start: Optional[int] = None
     window_end: Optional[int] = None
+    window_size: Optional[int] = None
 
 
 @dataclass
@@ -290,6 +291,7 @@ class ReliabilityManager:
             window_advanced=window_advanced,
             window_start=transfer.window_start,
             window_end=transfer.window_end,
+            window_size=transfer.window_size,
         )
 
     def process_ack(

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import threading
 import time
+import uuid
 from collections import deque
 from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
 
@@ -17,12 +18,26 @@ from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
 
 try:
     from datagram_buffer import DatagramBuffer
+    from file_manifest import (
+        FileBatchManifest,
+        build_file_metadata,
+        is_file_payload,
+        parse_file_payload,
+        serialize_file_payload,
+    )
     from message import PacketType, fragment_payload, reassemble_fragments
     from parser import ROLE_RESTRICTIONS, parse_datagram, serialize_message
     from reliability import AckInfo, ReliabilityManager, TransferKey, TransmissionAction
     from neighbor import NodeRole
 except ImportError:
     from .datagram_buffer import DatagramBuffer
+    from .file_manifest import (
+        FileBatchManifest,
+        build_file_metadata,
+        is_file_payload,
+        parse_file_payload,
+        serialize_file_payload,
+    )
     from .message import PacketType, fragment_payload, reassemble_fragments
     from .parser import ROLE_RESTRICTIONS, parse_datagram, serialize_message
     from .reliability import AckInfo, ReliabilityManager, TransferKey, TransmissionAction
@@ -142,6 +157,8 @@ class CommunicationModule:
         self._state_lock = threading.RLock()
         self._sequence_lock = threading.Lock()
         self._next_sequence = 0
+        self._data_id_lock = threading.Lock()
+        self._next_data_id = 1
 
         # Debugging hooks for testing purposes
         self.drop_block_number = None
@@ -175,6 +192,21 @@ class CommunicationModule:
             sequence = self._next_sequence
             self._next_sequence = (self._next_sequence + 1) & 0xFFFF
             return sequence
+
+    def _allocate_data_id(self) -> int:
+        """Allocate an unused SENSOR_DATA identifier for a new transfer."""
+        with self._data_id_lock:
+            active_ids = {
+                key.message_id
+                for key in self.reliability_manager.outbound_transfers
+                if key.packet_type == PacketType.SENSOR_DATA
+            }
+            for _ in range(256):
+                data_id = self._next_data_id
+                self._next_data_id = (self._next_data_id + 1) & 0xFF
+                if data_id not in active_ids:
+                    return data_id
+        raise ValueError("No unused 8-bit data_id is available.")
 
     # Converts the message object to a dictionary, ensuring it has the required fields
     @staticmethod
@@ -263,6 +295,109 @@ class CommunicationModule:
             destination=destination,
         )
         return raw
+
+    def send_file(
+        self,
+        *,
+        data_id: Optional[int] = None,
+        logical_name: str,
+        file_bytes: bytes,
+        destination: Address,
+        sensor_type: int = 0,
+        file_type: str = "image",
+        encoding: Optional[str] = None,
+        width: Optional[int] = None,
+        height: Optional[int] = None,
+        dtype: Optional[str] = None,
+        batch_id: Optional[str] = None,
+    ) -> bytes:
+        """Send one manifest-described file as a reliable SENSOR_DATA transfer."""
+        return self.send_file_batch(
+            [
+                {
+                    "data_id": data_id,
+                    "logical_name": logical_name,
+                    "file_bytes": file_bytes,
+                    "file_type": file_type,
+                    "encoding": encoding,
+                    "width": width,
+                    "height": height,
+                    "dtype": dtype,
+                }
+            ],
+            destination=destination,
+            sensor_type=sensor_type,
+            batch_id=batch_id,
+        )[0]
+
+    def send_file_batch(
+        self,
+        files,
+        *,
+        destination: Address,
+        sensor_type: int = 0,
+        batch_id: Optional[str] = None,
+    ) -> List[bytes]:
+        """Send independent file transfers that share one application manifest.
+
+        Each item is a mapping with ``logical_name`` and ``file_bytes``.
+        ``data_id`` is optional; when omitted, the Communication Module
+        assigns one.  ``byte_length`` is never accepted from the caller; it
+        is computed from the actual bytes.  Every file gets its own reliable
+        FLAME transfer and therefore its own ``data_id`` and sequence number,
+        while the existing 1024-byte fragmentation and reliability behavior
+        remains unchanged.
+        """
+        metadata_by_id = {}
+        bytes_by_id = {}
+        for spec in files:
+            if not isinstance(spec, dict):
+                raise TypeError("Each file specification must be a dictionary.")
+            file_bytes = spec.get("file_bytes", spec.get("data"))
+            if file_bytes is None:
+                raise ValueError("File specification requires file_bytes.")
+            data_id = spec.get("data_id")
+            if data_id is None:
+                data_id = self._allocate_data_id()
+            metadata = build_file_metadata(
+                data_id=data_id,
+                logical_name=spec["logical_name"],
+                file_bytes=file_bytes,
+                file_type=spec.get("file_type", "image"),
+                encoding=spec.get("encoding"),
+                width=spec.get("width"),
+                height=spec.get("height"),
+                dtype=spec.get("dtype"),
+            )
+            if metadata.data_id in metadata_by_id:
+                raise ValueError("Each file in a batch must have a unique data_id.")
+            metadata_by_id[metadata.data_id] = metadata
+            bytes_by_id[metadata.data_id] = bytes(file_bytes)
+
+        manifest = FileBatchManifest(
+            files=tuple(metadata_by_id.values()),
+            batch_id=batch_id or uuid.uuid4().hex,
+        )
+
+        first_fragments = []
+        for metadata in manifest.files:
+            first_fragments.append(
+                self.send_message(
+                    {
+                        "packet_type": PacketType.SENSOR_DATA,
+                        "role": 0,
+                        "data_id": metadata.data_id,
+                        "sensor_type": sensor_type,
+                        "payload": serialize_file_payload(
+                            manifest,
+                            metadata.data_id,
+                            bytes_by_id[metadata.data_id],
+                        ),
+                    },
+                    destination=destination,
+                )
+            )
+        return first_fragments
 
     # Send a reliable message, fragmenting if necessary, and manage the transfer state.
     def _send_reliable_message(self, packet: Dict[str, Any], destination: Address) -> bytes:
@@ -529,6 +664,24 @@ class CommunicationModule:
 
         complete = dict(result.complete_fragments[0])
         complete["payload"] = reassemble_fragments(result.complete_fragments)
+        if complete["packet_type"] == PacketType.SENSOR_DATA and is_file_payload(
+            complete["payload"]
+        ):
+            file_result = parse_file_payload(
+                complete["payload"],
+                expected_data_id=result.key.message_id,
+            )
+            metadata = file_result["metadata"]
+            manifest = file_result["manifest"]
+            complete["payload"] = file_result["file_bytes"]
+            complete["file_bytes"] = file_result["file_bytes"]
+            complete["file_metadata"] = metadata.to_dict()
+            complete["file_manifest"] = manifest.to_dict()
+            complete["file_length"] = metadata.byte_length
+            complete["file_type"] = metadata.file_type
+            complete["encoding"] = metadata.encoding
+            complete["logical_name"] = metadata.logical_name
+            complete["batch_id"] = manifest.batch_id
         complete["block_number"] = 0
         complete["source_address"] = source_address
         self._emit(
@@ -569,6 +722,7 @@ class CommunicationModule:
             sequence_number=ack.sequence_number,
             window_start=ack.window_start,
             window_end=ack.window_end,
+            window_size=ack.window_end - ack.window_start + 1,
             received_blocks=list(ack.received_blocks),
             destination=key.peer_address,
         )
@@ -593,6 +747,7 @@ class CommunicationModule:
             sequence_number=packet["sequence_number"],
             window_start=packet["window_start"],
             window_end=packet["window_end"],
+            window_size=packet["window_end"] - packet["window_start"] + 1,
             received_blocks=list(packet["received_blocks"]),
             source=source_address,
         )
@@ -646,6 +801,7 @@ class CommunicationModule:
                 sequence_number=action.key.sequence_number,
                 window_start=action.window_start,
                 window_end=action.window_end,
+                window_size=action.window_size,
                 destination=action.key.peer_address,
             )
 
@@ -674,6 +830,7 @@ class CommunicationModule:
                 block_number=block_number,
                 window_start=action.window_start,
                 window_end=action.window_end,
+                window_size=action.window_size,
                 destination=action.key.peer_address,
                 reason=action.reason,
             )
@@ -803,4 +960,3 @@ class CommunicationModule:
             ip_address=source_address[0],
             port=source_address[1],
         )
-

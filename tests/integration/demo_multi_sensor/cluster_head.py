@@ -15,6 +15,7 @@ CH_HOST = "127.0.0.1"
 CH_PORT = 0
 HELLO_PORT = 50010
 HELLO_INTERVAL = 5.0
+NEIGHBOR_CSV_PATH = "neighbor_state.csv"
 
 
 def main() -> None:
@@ -90,6 +91,14 @@ def main() -> None:
                     f"sensor_type={message.get('sensor_type')}"
                 )
 
+                if "file_metadata" in message:
+                    print(
+                        f"[CH] file={message['logical_name']} "
+                        f"encoding={message['encoding']} "
+                        f"length={message['file_length']} "
+                        f"batch={message['batch_id']}"
+                    )
+
                 print(
                     f"[CH] block="
                     f"{message.get('block_number')}/"
@@ -114,6 +123,9 @@ def main() -> None:
         print("\n[CH] Stopping...")
 
     finally:
+        neighbor.check_expired_neighbors()
+        exported_path = neighbor.export_csv(NEIGHBOR_CSV_PATH)
+        print(f"[CH] Neighbor table exported to {exported_path}")
         cluster.stop()
         socket.close()
 
