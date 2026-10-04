@@ -194,7 +194,9 @@ class NeighborModule:
         Process a JOIN message from a Sensor Node.
 
         A valid JOIN creates or updates a provisional neighbor
-        entry in JOIN_PENDING state.
+        entry in JOIN_PENDING state.  A JOIN from an already-associated
+        Sensor Node is a membership refresh and keeps the existing
+        ASSOCIATED state while extending its expiration time.
         """
 
         if current_time is None:
@@ -227,9 +229,8 @@ class NeighborModule:
 
         else:
             existing_neighbor.node_role = NodeRole.SENSOR_NODE
-            existing_neighbor.association_state = (
-                AssociationState.JOIN_PENDING
-            )
+            if existing_neighbor.association_state != AssociationState.ASSOCIATED:
+                existing_neighbor.association_state = AssociationState.JOIN_PENDING
             existing_neighbor.last_heard = current_time
             existing_neighbor.expiration_time = expiration_time
             existing_neighbor.model_id = model_id
@@ -249,6 +250,8 @@ class NeighborModule:
 
         The selected Cluster Head is stored as a known neighbor
         in JOIN_PENDING state until a matching JOIN_ACCEPT is received.
+        If the Sensor Node is already associated, the JOIN is a membership
+        refresh and the existing ASSOCIATED state is retained.
         """
 
         if current_time is None:
@@ -274,9 +277,8 @@ class NeighborModule:
             )
         else:
             existing_neighbor.node_role = NodeRole.CLUSTER_HEAD
-            existing_neighbor.association_state = (
-                AssociationState.JOIN_PENDING
-            )
+            if existing_neighbor.association_state != AssociationState.ASSOCIATED:
+                existing_neighbor.association_state = AssociationState.JOIN_PENDING
             existing_neighbor.last_heard = current_time
             existing_neighbor.expiration_time = expiration_time
             existing_neighbor.model_id = model_id
@@ -299,7 +301,10 @@ class NeighborModule:
         if neighbor is None:
             return False
 
-        if neighbor.association_state != AssociationState.JOIN_PENDING:
+        if neighbor.association_state not in (
+            AssociationState.JOIN_PENDING,
+            AssociationState.ASSOCIATED,
+        ):
             return False
 
         if neighbor.join_id != join_id:

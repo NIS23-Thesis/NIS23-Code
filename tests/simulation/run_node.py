@@ -421,6 +421,20 @@ class InteractiveNode:
             )
         elif neighbor.association_state == AssociationState.JOIN_PENDING:
             join_id = neighbor.join_id
+        elif neighbor.association_state == AssociationState.ASSOCIATED:
+            # The thesis defines JOIN as a membership refresh after a Sensor
+            # Node is associated. Reuse the current Join ID so repeated
+            # refreshes remain idempotent if a JOIN_ACCEPT is lost.
+            join_id = neighbor.join_id
+            if join_id is None:
+                join_id = self._next_join_id
+                self._next_join_id = (self._next_join_id + 1) & 0xFFFF
+            self.neighbor.start_join(
+                ip_address=source[0],
+                port=source[1],
+                join_id=join_id,
+                model_id=message.get("model_id"),
+            )
         else:
             return
 

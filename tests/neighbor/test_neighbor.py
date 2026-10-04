@@ -1091,6 +1091,84 @@ class TestNeighborModule(unittest.TestCase):
             AssociationState.INACTIVE,
         )
 
+    def test_21_associated_join_refresh_preserves_membership(self):
+        neighbor_module = NeighborModule()
+
+        neighbor_module.add_neighbor(
+            ip_address="172.20.10.4",
+            port=5000,
+            node_role=NodeRole.SENSOR_NODE,
+            association_state=AssociationState.ASSOCIATED,
+            last_heard=12000.0,
+            expiration_time=12030.0,
+            model_id=2,
+            join_id=15,
+        )
+
+        neighbor_module.process_join(
+            ip_address="172.20.10.4",
+            port=5000,
+            join_id=16,
+            model_id=2,
+            current_time=12010.0,
+            neighbor_timeout=30.0,
+        )
+
+        neighbor = neighbor_module.get_neighbor("172.20.10.4", 5000)
+
+        self.assertEqual(
+            neighbor.association_state,
+            AssociationState.ASSOCIATED,
+        )
+        self.assertEqual(neighbor.last_heard, 12010.0)
+        self.assertEqual(neighbor.expiration_time, 12040.0)
+        self.assertEqual(neighbor.join_id, 16)
+
+    def test_22_associated_sensor_refresh_accept_remains_associated(self):
+        neighbor_module = NeighborModule()
+
+        neighbor_module.add_neighbor(
+            ip_address="172.20.10.3",
+            port=5000,
+            node_role=NodeRole.CLUSTER_HEAD,
+            association_state=AssociationState.ASSOCIATED,
+            last_heard=13000.0,
+            expiration_time=13030.0,
+            model_id=2,
+            join_id=15,
+        )
+
+        neighbor_module.start_join(
+            ip_address="172.20.10.3",
+            port=5000,
+            join_id=16,
+            model_id=2,
+            current_time=13010.0,
+            neighbor_timeout=30.0,
+        )
+
+        self.assertEqual(
+            neighbor_module.get_neighbor("172.20.10.3", 5000).association_state,
+            AssociationState.ASSOCIATED,
+        )
+
+        accepted = neighbor_module.process_join_accept(
+            ip_address="172.20.10.3",
+            port=5000,
+            join_id=16,
+            current_time=13010.0,
+            neighbor_timeout=30.0,
+        )
+
+        neighbor = neighbor_module.get_neighbor("172.20.10.3", 5000)
+
+        self.assertTrue(accepted)
+        self.assertEqual(
+            neighbor.association_state,
+            AssociationState.ASSOCIATED,
+        )
+        self.assertEqual(neighbor.expiration_time, 13040.0)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
