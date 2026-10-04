@@ -48,6 +48,32 @@ class SocketInterfaceTests(unittest.TestCase):
         finally:
             s.close()
 
+    def test_reuse_port_allows_multiple_discovery_listeners(self):
+        if not hasattr(socket, "SO_REUSEPORT"):
+            self.skipTest("SO_REUSEPORT is unavailable on this platform.")
+
+        first = SocketInterface(
+            host="127.0.0.1",
+            port=0,
+            timeout=0.1,
+            reuse_address=True,
+            reuse_port=True,
+        )
+        second = None
+        try:
+            second = SocketInterface(
+                host="127.0.0.1",
+                port=first.address[1],
+                timeout=0.1,
+                reuse_address=True,
+                reuse_port=True,
+            )
+            self.assertEqual(second.address[1], first.address[1])
+        finally:
+            if second is not None:
+                second.close()
+            first.close()
+
 
 if __name__ == "__main__":
     unittest.main()

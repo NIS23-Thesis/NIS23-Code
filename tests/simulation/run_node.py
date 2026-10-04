@@ -221,6 +221,7 @@ class InteractiveNode:
                 port=discovery_port,
                 timeout=0.05,
                 reuse_address=True,
+                reuse_port=True,
             )
 
         self.communication = CommunicationModule(

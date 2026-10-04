@@ -12,6 +12,7 @@ class SocketInterface:
     timeout: float = 0.1
     broadcast: bool = False
     reuse_address: bool = False
+    reuse_port: bool = False
 
     def __post_init__(self) -> None:
         self.socket = socket.socket(
@@ -32,6 +33,16 @@ class SocketInterface:
             self.socket.setsockopt(
                 socket.SOL_SOCKET,
                 socket.SO_REUSEADDR,
+                1,
+            )
+
+        if self.reuse_port:
+            reuse_port_option = getattr(socket, "SO_REUSEPORT", None)
+            if reuse_port_option is None:
+                raise OSError("This platform does not support SO_REUSEPORT.")
+            self.socket.setsockopt(
+                socket.SOL_SOCKET,
+                reuse_port_option,
                 1,
             )
 
