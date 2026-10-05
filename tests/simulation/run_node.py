@@ -18,6 +18,7 @@ import shlex
 import sys
 import threading
 import time
+import os
 from pathlib import Path
 from typing import Any, Optional
 
@@ -29,8 +30,6 @@ if str(REPOSITORY_ROOT) not in sys.path:
 from flame.communication import CommunicationModule, PacketType, SocketInterface
 from flame.neighbor import AssociationState, NeighborModule
 
-
-DEFAULT_CLUSTER_HEAD_PORT = 50000
 DEFAULT_DISCOVERY_PORT = 50010
 DEFAULT_HELLO_INTERVAL=5.0
 
@@ -315,6 +314,27 @@ class InteractiveNode:
                 self.output.write(f"[ERROR] HELLO send failed: {exc}")
             self._stop.wait(self.hello_interval)
 
+    def _check_cluster_head_expiration(self) -> None:
+        if self._active_cluster_head is None:
+            return
+
+        cluster_head = self.neighbor.get_neighbor(
+            self._active_cluster_head[0],
+            self._active_cluster_head[1],
+        )
+
+        if cluster_head is None:
+            return
+
+        if cluster_head.association_state == AssociationState.INACTIVE:
+            old_cluster_head = self._active_cluster_head
+            self._active_cluster_head = None
+
+            self.output.write(
+                f"[FAILOVER] Cluster Head {endpoint_name(old_cluster_head)} "
+                "is inactive; waiting for another Cluster Head."
+            )
+
     def _sensor_loop(self) -> None:
         while not self._stop.is_set():
             for message in self.communication.pop_neighbor_messages():
@@ -337,6 +357,11 @@ class InteractiveNode:
                     )
 
             self.neighbor.check_expired_neighbors()
+            self._check_cluster_head_expiration()
+            self._stop.wait(0.05)
+
+            self._check_cluster_head_expiration()
+
             self._stop.wait(0.05)
 
     def _cluster_head_monitor(self) -> None:
@@ -664,16 +689,28 @@ def build_argument_parser() -> argparse.ArgumentParser:
     )
     return parser
 
+def get_cluster_head_data_dir() -> Path:
+    simulation_dir = Path(__file__).parent
+
+    index = 1
+    while True:
+        data_dir = simulation_dir / f"cluster_head_{index}"
+
+        if not data_dir.exists():
+            return data_dir
+
+        index += 1
 
 def main() -> None:
     args = build_argument_parser().parse_args()
     role = choose_role(args.role)
-    port = args.port if args.port is not None else (
-        DEFAULT_CLUSTER_HEAD_PORT if role == 1 else 0
-    )
-    data_dir = args.data_dir or Path(__file__).with_name(
-        "cluster_head" if role == 1 else "sensor"
-    )
+    port = args.port if args.port is not None else 0
+    if args.data_dir:
+        data_dir = args.data_dir
+    elif role == 1:
+        data_dir = get_cluster_head_data_dir()
+    else:
+        data_dir = Path(__file__).with_name("sensor")
     node = InteractiveNode(
         role=role,
         host=args.host,
@@ -689,7 +726,6 @@ def main() -> None:
         node.command_loop()
     finally:
         node.stop()
-
 
 if __name__ == "__main__":
     main()
