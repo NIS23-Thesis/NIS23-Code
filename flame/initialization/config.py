@@ -27,3 +27,6 @@ class NodeConfig:
     reassembly_timeout: float = 5.0
     completed_retention: float = 2.0
     max_retries: int = 3
+    # Federated Learning
+    training_threshold: int = 10
+    aggregation_threshold: int = 1
