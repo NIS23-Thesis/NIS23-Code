@@ -1,129 +1,128 @@
-# CLIVE - localhost-only emulator
+# CLIVE — localhost MANET emulator
 
-This revision removes the LAN / multi-host deployment path. CLIVE now runs entirely on one physical machine using Linux loopback addresses (`127/8`). Each virtual node still runs as an independent Python process and communicates through real UDP sockets, while NodeSocket applies the thesis-defined mobility and wireless-link constraints.
+CLIVE runs virtual MANET nodes as independent localhost Python processes using real UDP sockets. The Orchestrator precomputes mobility, the Emulator supervises processes, NodeSocket applies link conditions, and a protocol implementation plugs in through `ProtocolInterface`. Mobility ticks do not drive protocol timers.
 
-## Architecture
+## Clean project layout
 
-The implementation follows the localhost branch of the NIS23 methodology:
-
-1. **Orchestrator** precomputes the Gauss-Markov mobility trace before execution and creates one localhost record per node: `node_name`, `node_role`, `ip`, and `port`.
-2. **Emulator** launches one `multiprocessing.Process` per virtual node.
-3. **NodeBootstrapper** creates the node's `NodeSocket`, loads the selected protocol class, waits for the shared experiment epoch, and dispatches received datagrams.
-4. **NodeSocket** binds directly to the node's loopback address. There is no overlay/underlay translation. It uses experiment time only to select the current precomputed mobility position and apply distance -> RSSI -> bandwidth/PLR/IPDV, token-bucket rate limiting, delay, and energy accounting.
-5. **ProtocolInterface** is the boundary for FLAME or another protocol under test. CLIVE does **not** call `step(tick)`, `on_tick()`, or any protocol timer callback. Protocol implementations own their HELLO timers, sampling timers, retransmission timers, aggregation timers, and worker threads.
-
-The mobility trace still has a 100-500 ms quantum because that is how the emulator samples topology. That quantum is **not** a protocol clock.
-
-## Protocol integration
-
-A protocol must subclass `ProtocolInterface`:
-
-```python
-from protocol_interface import ProtocolInterface
-
-class MyProtocol(ProtocolInterface):
-    def start(self):
-        # Start protocol-owned workers/timers here.
-        pass
-
-    def on_datagram(self, data, source):
-        # Parse/dispatch an incoming UDP datagram here.
-        pass
-
-    def close(self):
-        # Stop protocol-owned workers/timers here.
-        pass
+```text
+clive/
+├── clive.py                    # CLI entry point
+├── orchestrator.py             # scenario config + mobility/topology trace generation
+├── emulator.py                 # process supervisor
+├── nodebootstrapper.py         # per-node runtime
+├── nodesocket.py               # UDP/link emulation + metrics
+├── protocol_interface.py       # protocol integration boundary
+├── example_protocol.py         # validation/demo traffic only
+├── visualizer.py               # read-only visualization server
+├── visualizer/static/          # browser UI
+├── configs/
+│   ├── all_options.json        # every supported setting in one valid JSON
+│   ├── demos/                  # short demo scenarios
+│   └── evaluations/            # grouped evaluation scenarios
+├── scripts/
+│   ├── run_scenario.sh
+│   ├── run_visualizer.sh
+│   └── run_evaluations.py
+└── validation/
+    ├── run_all.py
+    ├── validate_configs.py
+    ├── validate_features.py
+    ├── validate_nodesocket.py
+    ├── validate_visualizer.py
+    └── validate_clive.py
 ```
 
-The protocol receives the CLIVE node runtime as `self.node` and can use:
+Generated results, Python caches, old LAN/deployment files, unrelated coursework files, and duplicate documentation are intentionally excluded.
 
-- `self.node.spec` - role/name/address information
-- `self.node.plan` - experiment configuration
-- `self.node.sendto(data, destination)` - emulated UDP transmission
-- `self.node.elapsed()` - experiment-relative time
-- `self.node.is_active()` - experiment/stop state
+## Demo tomorrow
 
-Run a protocol with:
+Terminal 1:
 
 ```bash
-python3 clive.py --scenario localhost.json --protocol your_module:YourProtocol
+scripts/run_visualizer.sh
 ```
 
-`example_protocol.py` contains `IndependentProbeProtocol`, which is validation-only and deliberately uses a 70 ms protocol-owned timer while the mobility quantum is 500 ms. This demonstrates that the protocol is not mobility-ticked.
-
-## Normal localhost run
+Terminal 2:
 
 ```bash
-bash deploy.sh
+scripts/run_scenario.sh static_line --protocol example_protocol:IndependentProbeProtocol
+scripts/run_scenario.sh static_star --protocol example_protocol:IndependentProbeProtocol
+scripts/run_scenario.sh gauss_markov_random_pause --protocol example_protocol:IndependentProbeProtocol
+scripts/run_scenario.sh heterogeneous_ranges --protocol example_protocol:IndependentProbeProtocol
 ```
 
-or:
+`IndependentProbeProtocol` is validation/demo traffic only; it is not FLAME.
+
+## Run any JSON directly
 
 ```bash
-python3 clive.py --scenario localhost.json --results results
+python3 clive.py --scenario configs/all_options.json --results results
 ```
 
-`localhost.json` uses the thesis' low topology-density level of 4 Cluster Heads + 20 Sensor Nodes. Its short duration is intended as a functional demo; use the thesis experiment duration and scenario parameters for actual measurements.
-
-## 200-node script
-
-`run_200_nodes.py` creates **200 independent virtual nodes** by default: 20 Cluster Heads + 180 Sensor Nodes.
-
-Plan/configuration check only:
+Use a real protocol with:
 
 ```bash
-python3 run_200_nodes.py --plan-only
+python3 clive.py --scenario configs/demos/static_star.json \
+  --protocol your_module:YourProtocol
 ```
 
-Launch all 200 node processes with no protocol traffic (`NullProtocol`):
+## Evaluation sets
+
+List all evaluation configs:
 
 ```bash
-python3 run_200_nodes.py
+python3 scripts/run_evaluations.py --list
 ```
 
-Launch 200 nodes using your protocol implementation:
+Validate/build all plans without launching 5-minute experiments:
 
 ```bash
-python3 run_200_nodes.py --duration 30 --protocol your_module:YourProtocol
+python3 scripts/run_evaluations.py
 ```
 
-The 200-node composition is a **scalability stress scenario**, not a thesis Table 4-8 density level. Table 4-8 tops out at 10 CH + 100 SN.
+Validate one group:
+
+```bash
+python3 scripts/run_evaluations.py mobility
+python3 scripts/run_evaluations.py density
+python3 scripts/run_evaluations.py area
+python3 scripts/run_evaluations.py radio
+python3 scripts/run_evaluations.py topology
+```
+
+Quickly execute a group with a shortened duration:
+
+```bash
+python3 scripts/run_evaluations.py topology --run --duration 10 \
+  --protocol example_protocol:IndependentProbeProtocol
+```
+
+Formal evaluation execution uses the duration stored in each JSON when `--duration` is omitted.
 
 ## Validation
 
-Run the NodeSocket behavioral checks:
+Run the complete non-stress suite:
 
 ```bash
-python3 evaluation/validate_nodesocket_acceptance.py
+python3 validation/run_all.py
 ```
 
-Run end-to-end CLIVE validation, including the protocol-decoupling check and 200-node plan generation:
+Optional 200-process stress check:
 
 ```bash
-python3 evaluation/validate_clive.py
+python3 validation/validate_clive.py --stress-200
 ```
 
-Also launch a short 200-process stress test:
+## Configuration
 
-```bash
-python3 evaluation/validate_clive.py --stress-200
-```
+See `configs/README.md`. The main mobility modes are `gauss_markov`, `random_waypoint`, and `static`. Initial layouts are `random`, `line`, `star`, `grid`, and `manual`. Link range can be RSSI-derived or explicit, with optional role/node overrides. Random pauses are independent per node and reproducible from the scenario seed.
 
-The validators check direct localhost UDP delivery, RSSI/link mapping, energy formulas, unreachable-link drops, bandwidth delay, broadcast pairwise behavior, process supervision, result files, and the protocol interface.
+## Result files
 
-## Main files
+By default each run keeps only the files needed for normal evaluation and replay:
 
-- `orchestrator.py` - configuration validation and precomputed Gauss-Markov mobility
-- `emulator.py` - localhost process supervisor
-- `nodebootstrapper.py` - per-process node runtime and datagram dispatch
-- `nodesocket.py` - single-hop UDP wireless-link emulation
-- `protocol_interface.py` - protocol integration contract
-- `example_protocol.py` - validation-only protocol example
-- `clive.py` - normal command-line runner
-- `run_200_nodes.py` - 200-node stress runner
-- `evaluation/validate_nodesocket_acceptance.py` - NodeSocket behavioral validation
-- `evaluation/validate_clive.py` - end-to-end and optional 200-process validation
+- `plan.json` - canonical emulation plan, including the precomputed mobility trace.
+- `run-manifest.json` - run status and provenance.
+- `metrics.json` - one compact run-level metrics file containing totals and per-node counters.
 
-## Scope boundary
-
-CLIVE emulates the network conditions required by the thesis. It does not implement FLAME discovery, membership, fragmentation/reassembly, ACK/retransmission logic, sliding-window reliability, Federated Learning, or MANET routing. Those belong to the protocol/application layer above `NodeSocket`.
+Verbose per-node `*.events.jsonl` and `*.packets.jsonl` files are disabled by default. They can be enabled with the scenario `logging` section and are then stored under `debug/`. `mobility.tsv` is also optional because its coordinates duplicate the trace already stored in `plan.json`.

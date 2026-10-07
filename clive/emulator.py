@@ -11,9 +11,11 @@ import os
 import tempfile
 import time
 import traceback
+from collections import defaultdict
 
 from nodebootstrapper import run_node
 from orchestrator import EmulationPlan, atomic_json
+from nodesocket import MetricsCollector
 
 
 class Emulator:
@@ -23,6 +25,38 @@ class Emulator:
         self.protocol_class_path = protocol_class_path
         self.run_dir = None
 
+    @staticmethod
+    def _aggregate_metrics(per_node):
+        fields = MetricsCollector.FIELDS
+        totals = {name: 0 for name in fields}
+        by_type = defaultdict(lambda: {name: 0 for name in fields})
+        nodes = {}
+        for node_name, snapshot in sorted(per_node.items()):
+            compact = {
+                "success": bool(snapshot.get("success", False)),
+                **{name: snapshot.get(name, 0) for name in fields},
+                "by_packet_type": snapshot.get("by_packet_type", {}),
+                "unknown_sources_rejected": snapshot.get("unknown_sources_rejected", 0),
+            }
+            nodes[node_name] = compact
+            for name in fields:
+                totals[name] += compact[name]
+            for packet_type, values in compact["by_packet_type"].items():
+                for name in fields:
+                    by_type[str(packet_type)][name] += values.get(name, 0)
+        return {
+            "schema_version": 4,
+            "success": all(row["success"] for row in nodes.values()),
+            "totals": totals,
+            "by_packet_type": {key: dict(value) for key, value in sorted(by_type.items())},
+            "nodes": nodes,
+            "accounting": (
+                "packets_admitted = accepted into software queue; packets_sent/bits_sent = "
+                "actual modeled radio emissions; kernel_datagrams_sent = successful kernel "
+                "sendto calls (not verified delivery); delivery_drops = per-recipient modeled loss"
+            ),
+        }
+
     def run(self):
         self.plan.validate()
         nodes = list(self.plan.nodes)
@@ -30,7 +64,8 @@ class Emulator:
         self.run_dir = tempfile.mkdtemp(prefix="run-", dir=self.results_dir)
         local_plan_path = os.path.join(self.run_dir, "plan.json")
         self.plan.save(local_plan_path)
-        self.plan.save_trace(os.path.join(self.run_dir, "mobility.tsv"))
+        if self.plan.logging_config.mobility_tsv:
+            self.plan.save_trace(os.path.join(self.run_dir, "mobility.tsv"))
 
         manifest_path = os.path.join(self.run_dir, "run-manifest.json")
         manifest = {
@@ -40,6 +75,7 @@ class Emulator:
             "nodes": [n.name for n in nodes],
             "started_at": time.time(),
             "plan_path": local_plan_path,
+            "protocol": self.protocol_class_path or "protocol_interface:NullProtocol",
             "failures": [],
         }
         atomic_json(manifest_path, manifest)
@@ -50,6 +86,19 @@ class Emulator:
         context = mp.get_context(method)
         stop = context.Event()
         workers = []
+        metrics_by_node = {}
+
+        def handle_worker_message(node, message):
+            if not message:
+                return
+            status = message.get("status")
+            if status == "failed":
+                raise RuntimeError(f"worker {node.name} failed:\n{message.get('error', '')}")
+            if status == "complete":
+                metrics = message.get("metrics")
+                if not isinstance(metrics, dict):
+                    raise RuntimeError(f"worker {node.name} returned invalid metrics")
+                metrics_by_node[node.name] = metrics
 
         try:
             for node in nodes:
@@ -120,21 +169,30 @@ class Emulator:
                             message = connection.recv()
                         except EOFError:
                             message = None
-                        if message and message.get("status") == "failed":
-                            raise RuntimeError(f"worker {node.name} failed:\n{message.get('error', '')}")
+                        handle_worker_message(node, message)
                     if process.exitcode not in (None, 0):
                         raise RuntimeError(f"worker {node.name} failed with exit code {process.exitcode}")
                 if time.monotonic() >= deadline:
                     raise TimeoutError("worker exceeded experiment deadline and shutdown grace")
                 time.sleep(0.01)
 
-            for node, process, _ in workers:
+            for node, process, connection in workers:
                 process.join()
                 if process.exitcode != 0:
                     raise RuntimeError(f"worker {node.name} failed with exit code {process.exitcode}")
-                for suffix in ("metrics.json", "events.jsonl", "packets.jsonl"):
-                    if not os.path.isfile(os.path.join(self.run_dir, f"{node.name}.{suffix}")):
-                        raise RuntimeError(f"missing output for {node.name}: {suffix}")
+                # A worker can exit between the final poll and the while-condition check.
+                # Drain any completion message that is still buffered in its control pipe.
+                while connection.poll():
+                    try:
+                        message = connection.recv()
+                    except EOFError:
+                        break
+                    handle_worker_message(node, message)
+
+            missing = [node.name for node in nodes if node.name not in metrics_by_node]
+            if missing:
+                raise RuntimeError(f"missing final metrics from workers: {missing}")
+            atomic_json(os.path.join(self.run_dir, "metrics.json"), self._aggregate_metrics(metrics_by_node))
 
             manifest.update(success=True, status="complete", completed_at=time.time())
         except BaseException:

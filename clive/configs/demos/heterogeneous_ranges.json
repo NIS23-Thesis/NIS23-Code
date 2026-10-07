@@ -1,0 +1,31 @@
+{
+  "num_ch": 2,
+  "num_sn": 6,
+  "runtime": {
+    "duration_s": 10,
+    "seed": 810,
+    "startup_delay_s": 1.0,
+    "readiness_timeout_s": 45.0,
+    "start_tolerance_s": 0.5
+  },
+  "link": {
+    "range_mode": "explicit",
+    "max_range_m": 70.0,
+    "role_max_range_m": {
+      "cluster_head": 100.0,
+      "sensor_node": 60.0
+    },
+    "node_max_range_m": {
+      "CH-2": 130.0,
+      "SN-1": 40.0
+    }
+  },
+  "mobility": {
+    "model": "static",
+    "initial_topology": "grid",
+    "tick_interval": 0.5,
+    "area_width_m": 300.0,
+    "area_height_m": 300.0,
+    "topology_margin_m": 30.0
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "num_ch": 1,
+  "num_sn": 12,
+  "runtime": {
+    "duration_s": 60.0,
+    "seed": 810,
+    "startup_delay_s": 2.0,
+    "readiness_timeout_s": 45.0,
+    "start_tolerance_s": 1.0
+  },
+  "mobility": {
+    "model": "static",
+    "initial_topology": "grid",
+    "tick_interval": 0.5,
+    "area_width_m": 350.0,
+    "area_height_m": 350.0,
+    "topology_margin_m": 35.0
+  },
+  "link": {
+    "range_mode": "explicit",
+    "max_range_m": 70.0,
+    "max_data_rate_bps": 1000000000.0
+  }
+}

@@ -52,12 +52,13 @@ RSSI_POOR_DBM = -75.0
 RSSI_GOOD_DBM = -65.0
 
 
-def link_conditions(distance_m, cfg):
-    """Return the exact CLIVE Table 3-3 link conditions for ``distance_m``.
+def link_conditions(distance_m, cfg, max_range_m=None):
+    """Return CLIVE link conditions for a sender-to-receiver distance.
 
-    The path-loss equation is evaluated from the thesis reference distance d0.  Distances
-    below d0 are clamped to d0 because the methodology defines RSSI0 at d0=1 m and does
-    not define extrapolation above that reference signal strength.
+    ``range_mode='rssi'`` preserves Thesis Table 3-3 exactly. In
+    ``range_mode='explicit'`` the sender's configured transmission range is the hard
+    reachability boundary and the same strong/good/poor quality bands are scaled across
+    that range. RSSI is still computed and logged for observability.
     """
     finite(distance_m, "distance_m", 0)
 
@@ -66,16 +67,30 @@ def link_conditions(distance_m, cfg):
         effective_distance / cfg.d0_m
     )
 
-    # Table 3-3.  At the -85 dBm boundary we treat the link as unreachable; this is
-    # consistent with the methodology's ~70 m transmission-limit validation criterion.
-    if rssi <= RSSI_UNREACHABLE_DBM:
-        fraction, plr, ipdv_ms = 0.0, 1.00, None
-    elif rssi <= RSSI_POOR_DBM:
-        fraction, plr, ipdv_ms = 0.20, 0.10, 25.0
-    elif rssi < RSSI_GOOD_DBM:
-        fraction, plr, ipdv_ms = 0.44, 0.02, 5.0
+    if cfg.range_mode == "explicit":
+        range_limit = float(max_range_m if max_range_m is not None else cfg.tx_range_m(None))
+        if distance_m > range_limit:
+            fraction, plr, ipdv_ms = 0.0, 1.00, None
+        else:
+            # Preserve the Table 3-3 relative quality regions while allowing the
+            # experimenter to change the absolute sender range.
+            ratio = 0.0 if range_limit <= 0 else float(distance_m) / range_limit
+            if ratio <= 15.0 / 70.0:
+                fraction, plr, ipdv_ms = 1.00, 0.00, 1.0
+            elif ratio <= 32.0 / 70.0:
+                fraction, plr, ipdv_ms = 0.44, 0.02, 5.0
+            else:
+                fraction, plr, ipdv_ms = 0.20, 0.10, 25.0
     else:
-        fraction, plr, ipdv_ms = 1.00, 0.00, 1.0
+        range_limit = cfg.rssi_reachability_range_m()
+        if rssi <= RSSI_UNREACHABLE_DBM:
+            fraction, plr, ipdv_ms = 0.0, 1.00, None
+        elif rssi <= RSSI_POOR_DBM:
+            fraction, plr, ipdv_ms = 0.20, 0.10, 25.0
+        elif rssi < RSSI_GOOD_DBM:
+            fraction, plr, ipdv_ms = 0.44, 0.02, 5.0
+        else:
+            fraction, plr, ipdv_ms = 1.00, 0.00, 1.0
 
     return {
         "reachable": fraction > 0.0,
@@ -83,7 +98,10 @@ def link_conditions(distance_m, cfg):
         "bandwidth_bps": cfg.max_data_rate_bps * fraction,
         "plr": plr,
         "ipdv_ms": ipdv_ms,
+        "max_range_m": range_limit,
+        "range_mode": cfg.range_mode,
     }
+
 
 
 class TokenBucket:
@@ -185,22 +203,19 @@ class MetricsCollector:
         "socket_errors",
     )
 
-    def __init__(self, node_name, log_path=None, tail_size=256):
+    def __init__(self, node_name, log_path=None):
         self.node_name = node_name
         self.lock = threading.Lock()
         self.totals = {name: 0 for name in self.FIELDS}
         self.by_packet_type = defaultdict(
             lambda: {name: 0 for name in self.FIELDS}
         )
-        self.packet_log = deque(maxlen=tail_size)
-        self.log_path = str(log_path) if log_path else None
         self.stream = (
             open(log_path, "x", encoding="utf-8", buffering=1)
             if log_path
             else None
         )
         self.unknown_sources_rejected = 0
-        self.records_written = 0
 
     def record(self, kind, *, header=None, counters=None, **fields):
         key = "unknown" if header is None else str(header["packet_type"])
@@ -208,6 +223,9 @@ class MetricsCollector:
             "event": kind,
             "node_name": self.node_name,
             "common_header": header,
+            # Counter deltas make live visualization possible without waiting for the
+            # final metrics.json file. They mirror the same values applied below.
+            "counters": dict(counters or {}),
             **fields,
         }
         with self.lock:
@@ -216,8 +234,6 @@ class MetricsCollector:
             for name, value in (counters or {}).items():
                 self.totals[name] += value
                 self.by_packet_type[key][name] += value
-            self.packet_log.append(record)
-            self.records_written += 1
 
     def reject_unknown(self):
         # Unknown local UDP senders are not part of the emulation plan.  Avoid allowing
@@ -234,10 +250,6 @@ class MetricsCollector:
                 "by_packet_type": {
                     key: dict(value) for key, value in self.by_packet_type.items()
                 },
-                "packet_log": list(self.packet_log),
-                "packet_log_is_tail": True,
-                "packet_log_path": self.log_path,
-                "records_written": self.records_written,
                 "unknown_sources_rejected": self.unknown_sources_rejected,
                 "accounting": (
                     "packets_admitted = accepted into software queue; packets_sent/bits_sent "
@@ -299,11 +311,7 @@ class NodeSocket:
         try:
             self._sock.bind(node_spec.address)
             self._sock.setblocking(False)
-            self.metrics = MetricsCollector(
-                node_spec.name,
-                log_path,
-                plan.config.log_tail_records,
-            )
+            self.metrics = MetricsCollector(node_spec.name, log_path)
         except BaseException:
             self._sock.close()
             raise
@@ -507,13 +515,14 @@ class NodeSocket:
 
     def _links_for_request(self, req, tick):
         links = []
+        sender_range = self.cfg.tx_range_m(self.spec)
         for name in req["targets"]:
             distance = self._distance_to(name, tick)
             links.append(
                 {
                     "name": name,
                     "distance_m": distance,
-                    "conditions": link_conditions(distance, self.cfg),
+                    "conditions": link_conditions(distance, self.cfg, sender_range),
                 }
             )
         return links

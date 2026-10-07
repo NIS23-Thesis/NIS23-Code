@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CLIVE Visualizer</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <div class="eyebrow">Computers Living In Virtual Networks Emulator</div>
+      <h1>CLIVE <span>Visualizer</span></h1>
+    </div>
+    <div class="header-actions">
+      <label class="run-select-wrap">Run
+        <select id="runSelect"></select>
+      </label>
+      <div id="statusPill" class="status waiting">WAITING</div>
+    </div>
+  </header>
+
+  <main class="dashboard">
+    <section class="panel topology-panel">
+      <div class="panel-head">
+        <div>
+          <h2>MANET topology</h2>
+          <p id="topologySubtitle">Waiting for a CLIVE run…</p>
+        </div>
+        <div class="legend">
+          <span><i class="dot ch"></i>Cluster Head</span>
+          <span><i class="dot sn"></i>Sensor Node</span>
+          <span><i class="line strong"></i>Reachable link</span>
+        </div>
+      </div>
+      <div class="canvas-wrap" id="canvasWrap">
+        <canvas id="topologyCanvas"></canvas>
+        <div id="canvasEmpty" class="canvas-empty">Start CLIVE or select an existing run.</div>
+        <div class="map-controls" aria-label="Topology view controls">
+          <button id="zoomOut" type="button" title="Zoom out">−</button>
+          <button id="zoomReset" type="button" title="Reset zoom and pan"><span id="zoomReadout">100%</span></button>
+          <button id="zoomIn" type="button" title="Zoom in">+</button>
+        </div>
+        <div class="map-hint">Wheel to zoom · drag to pan · double-click to reset</div>
+        <div class="canvas-corner" id="canvasCorner"></div>
+      </div>
+      <div class="transport">
+        <button id="playButton" class="primary">▶ Play</button>
+        <div class="time-readout"><strong id="timeReadout">0.00 s</strong><span id="tickReadout">tick 0</span></div>
+        <input id="timeSlider" type="range" min="0" max="1" value="0" step="0.01">
+        <label>Speed
+          <select id="speedSelect">
+            <option value="0.25">0.25×</option>
+            <option value="0.5">0.5×</option>
+            <option value="1" selected>1×</option>
+            <option value="2">2×</option>
+            <option value="4">4×</option>
+          </select>
+        </label>
+      </div>
+      <div class="toggles">
+        <label><input type="checkbox" id="showLinks"> Selected-node links</label>
+        <label><input type="checkbox" id="showLabels"> Node labels</label>
+      </div>
+    </section>
+
+    <aside class="side-stack">
+      <section class="panel metrics-panel">
+        <div class="panel-head compact"><h2>Network metrics</h2><span id="metricsMode">—</span></div>
+        <div class="metric-grid">
+          <article><span>Nodes</span><strong id="mNodes">—</strong></article>
+          <article><span>TX packets</span><strong id="mSent">—</strong></article>
+          <article><span>RX packets</span><strong id="mReceived">—</strong></article>
+          <article><span>Delivery drops</span><strong id="mDrops">—</strong></article>
+          <article><span>Drop ratio</span><strong id="mDropRatio">—</strong></article>
+          <article><span>TX energy</span><strong id="mEnergy">—</strong></article>
+        </div>
+      </section>
+
+      <section class="panel selected-panel">
+        <div class="panel-head compact"><h2>Selected node</h2><span id="selectedRole">None</span></div>
+        <div id="selectedNode" class="selected-empty">Click a node in the topology.</div>
+      </section>
+
+      <section class="panel config-panel">
+        <div class="panel-head compact"><h2>Experiment config</h2><span id="configRun">—</span></div>
+        <dl id="configList" class="config-list"></dl>
+      </section>
+    </aside>
+
+    <section id="trafficPanel" class="panel traffic-panel">
+      <div class="panel-head compact">
+        <div><h2>Traffic timeline</h2><p>Observed NodeSocket packet events per time bucket.</p></div>
+        <span id="trafficSummary" class="muted">—</span>
+      </div>
+      <div class="chart-wrap">
+        <canvas id="trafficCanvas"></canvas>
+        <div id="trafficEmpty" class="chart-empty" hidden></div>
+      </div>
+    </section>
+
+    <section id="eventsPanel" class="panel events-panel">
+      <div class="panel-head compact">
+        <div><h2>Event stream</h2><p>Packet and protocol events around the displayed experiment time.</p></div>
+        <select id="eventFilter">
+          <option value="all">All events</option>
+          <option value="transmit">Transmit</option>
+          <option value="receive">Receive</option>
+          <option value="delivery_drop">Drops</option>
+          <option value="protocol">Protocol</option>
+        </select>
+      </div>
+      <div class="event-table-wrap">
+        <table>
+          <thead><tr><th>Time</th><th>Event</th><th>From</th><th>To</th><th>Type / Seq</th><th>Link</th></tr></thead>
+          <tbody id="eventRows"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel nodes-panel">
+      <div class="panel-head compact">
+        <div><h2>Nodes</h2><p>Per-node final metrics when available; accumulated counters otherwise.</p></div>
+        <input id="nodeSearch" placeholder="Filter nodes…">
+      </div>
+      <div class="node-table-wrap">
+        <table>
+          <thead><tr><th>Node</th><th>Role</th><th>TX</th><th>RX</th><th>Drops</th><th>Bits TX</th><th>Energy TX</th></tr></thead>
+          <tbody id="nodeRows"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <footer>Read-only visualization. Mobility trace playback never calls or clocks the protocol.</footer>
+  <script src="/app.js"></script>
+</body>
+</html>

@@ -12,7 +12,6 @@ import os
 import threading
 import time
 import traceback
-from collections import deque
 
 from nodesocket import NodeSocket
 from orchestrator import EmulationPlan, atomic_json
@@ -20,19 +19,14 @@ from protocol_interface import NullProtocol, ProtocolInterface
 
 
 class EventLog:
-    """List-like append interface that streams all events and retains a small tail."""
+    """Protocol-event stream used only when diagnostic logging is enabled."""
 
-    def __init__(self, path=None, tail_size=256):
-        self.tail = deque(maxlen=tail_size)
+    def __init__(self, path=None):
         self.stream = open(path, "x", encoding="utf-8", buffering=1) if path else None
 
     def append(self, event):
         if self.stream:
             self.stream.write(json.dumps(event, allow_nan=False) + "\n")
-        self.tail.append(event)
-
-    def __iter__(self):
-        return iter(self.tail)
 
     def close(self):
         if self.stream:
@@ -57,7 +51,7 @@ class Node:
         self.plan = plan
         self.socket = node_socket
         self.stop_event = stop_event
-        self.events = EventLog(event_path, plan.config.log_tail_records)
+        self.events = EventLog(event_path)
         self._closing = threading.Event()
         self.protocol = None
         try:
@@ -138,7 +132,7 @@ class Node:
                     self.socket.close()
                 finally:
                     self.events.close()
-        return self.socket.metrics.snapshot(), list(self.events)
+        return self.socket.metrics.snapshot()
 
 
 def _load_protocol_class(path):
@@ -160,18 +154,31 @@ def run_node(node_name, plan_path, results_dir, protocol_class_path=None, contro
     try:
         plan = EmulationPlan.load(plan_path)
         spec = plan.node_by_name(node_name)
+
+        packet_path = None
+        if plan.logging_config.packet_events:
+            packet_dir = os.path.join(results_dir, "debug", "packets")
+            os.makedirs(packet_dir, exist_ok=True)
+            packet_path = os.path.join(packet_dir, f"{node_name}.jsonl")
+
+        event_path = None
+        if plan.logging_config.protocol_events:
+            event_dir = os.path.join(results_dir, "debug", "events")
+            os.makedirs(event_dir, exist_ok=True)
+            event_path = os.path.join(event_dir, f"{node_name}.jsonl")
+
         node_socket = NodeSocket(
             spec,
             plan,
             plan.config.seed,
-            log_path=os.path.join(results_dir, f"{node_name}.packets.jsonl"),
+            log_path=packet_path,
         )
         node = Node(
             spec,
             plan,
             node_socket,
             _load_protocol_class(protocol_class_path),
-            event_path=os.path.join(results_dir, f"{node_name}.events.jsonl"),
+            event_path=event_path,
             stop_event=stop_event,
         )
         if control is not None:
@@ -182,7 +189,11 @@ def run_node(node_name, plan_path, results_dir, protocol_class_path=None, contro
             if message.get("action") != "start":
                 raise RuntimeError("worker start canceled")
             node_socket.set_epoch(message["epoch_start"])
-        node.run()
+
+        snapshot = node.run()
+        snapshot["success"] = True
+        if control is not None:
+            control.send({"status": "complete", "metrics": snapshot})
     except BaseException:
         error = traceback.format_exc()
         if control is not None:
@@ -198,10 +209,9 @@ def run_node(node_name, plan_path, results_dir, protocol_class_path=None, contro
             except BaseException:
                 if error is None:
                     error = traceback.format_exc()
-            snapshot = node_socket.metrics.snapshot()
-            snapshot["success"] = error is None
-            atomic_json(os.path.join(results_dir, f"{node_name}.metrics.json"), snapshot)
         if error and spec is not None:
-            atomic_json(os.path.join(results_dir, f"{node_name}.error.json"), {"error": error})
+            error_dir = os.path.join(results_dir, "errors")
+            os.makedirs(error_dir, exist_ok=True)
+            atomic_json(os.path.join(error_dir, f"{node_name}.json"), {"error": error})
         if control is not None:
             control.close()

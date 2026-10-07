@@ -1,0 +1,31 @@
+{
+  "num_ch": 7,
+  "num_sn": 50,
+  "runtime": {
+    "duration_s": 300.0,
+    "seed": 810,
+    "startup_delay_s": 2.0,
+    "readiness_timeout_s": 45.0,
+    "start_tolerance_s": 1.0
+  },
+  "mobility": {
+    "model": "gauss_markov",
+    "initial_topology": "random",
+    "tick_interval": 0.5,
+    "alpha": 0.5,
+    "area_width_m": 350.0,
+    "area_height_m": 350.0,
+    "ch_mean_speed_mps": 0.0,
+    "sn_mean_speed_mps": 0.0,
+    "speed_stddev": 1.0,
+    "direction_stddev": 0.5,
+    "pause_trigger": "zero_speed"
+  },
+  "link": {
+    "range_mode": "rssi",
+    "pathloss_exponent": 3.0,
+    "rssi0_dbm": -30.0,
+    "d0_m": 1.0,
+    "max_data_rate_bps": 1000000000.0
+  }
+}

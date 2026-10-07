@@ -1,4 +1,5 @@
 __pycache__/
 *.py[cod]
-deployment-results/
-validation-results/
+results/
+*.log
+.DS_Store

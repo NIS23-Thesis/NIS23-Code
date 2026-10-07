@@ -1,0 +1,48 @@
+{
+  "num_ch": 2,
+  "num_sn": 4,
+  "runtime": {
+    "duration_s": 10,
+    "seed": 810,
+    "startup_delay_s": 1.0,
+    "readiness_timeout_s": 45.0,
+    "start_tolerance_s": 0.5
+  },
+  "link": {
+    "range_mode": "explicit",
+    "max_range_m": 55.0
+  },
+  "mobility": {
+    "model": "static",
+    "initial_topology": "manual",
+    "tick_interval": 0.5,
+    "area_width_m": 300.0,
+    "area_height_m": 300.0,
+    "manual_positions": {
+      "CH-1": [
+        60,
+        150
+      ],
+      "CH-2": [
+        240,
+        150
+      ],
+      "SN-1": [
+        105,
+        150
+      ],
+      "SN-2": [
+        150,
+        150
+      ],
+      "SN-3": [
+        195,
+        150
+      ],
+      "SN-4": [
+        150,
+        220
+      ]
+    }
+  }
+}
