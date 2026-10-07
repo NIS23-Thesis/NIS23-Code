@@ -7,7 +7,7 @@ responsibilities above NodeSocket.
 
 NodeSocket applies the CLIVE methodology to UDP datagrams:
 
-* virtual/overlay <-> physical/underlay address translation;
+* direct localhost loopback UDP addressing (no address translation);
 * topology from the shared precomputed mobility trace;
 * distance -> RSSI using the log-distance path-loss equation;
 * RSSI -> bandwidth / PLR / IPDV using Thesis Table 3-3;
@@ -170,6 +170,8 @@ class MetricsCollector:
     FIELDS = (
         "packets_attempted",
         "bits_attempted",
+        "packets_admitted",
+        "bits_admitted",
         "packets_sent",
         "bits_sent",
         "energy_sent_j",
@@ -179,8 +181,8 @@ class MetricsCollector:
         "packets_dropped",
         "delivery_attempts",
         "delivery_drops",
-        "underlay_datagrams_sent",
-        "underlay_errors",
+        "kernel_datagrams_sent",
+        "socket_errors",
     )
 
     def __init__(self, node_name, log_path=None, tail_size=256):
@@ -218,7 +220,7 @@ class MetricsCollector:
             self.records_written += 1
 
     def reject_unknown(self):
-        # Unknown physical senders are not part of the emulation plan.  Avoid allowing
+        # Unknown local UDP senders are not part of the emulation plan.  Avoid allowing
         # arbitrary host traffic to grow the packet log indefinitely.
         with self.lock:
             self.unknown_sources_rejected += 1
@@ -238,8 +240,10 @@ class MetricsCollector:
                 "records_written": self.records_written,
                 "unknown_sources_rejected": self.unknown_sources_rejected,
                 "accounting": (
-                    "packets_sent/bits_sent = logical radio emissions accepted for "
-                    "transmission; delivery_drops = per-recipient simulated wireless loss"
+                    "packets_admitted = accepted into software queue; packets_sent/bits_sent "
+                    "= actual modeled radio emissions; kernel_datagrams_sent = successful "
+                    "kernel sendto calls (not verified delivery); delivery_drops = "
+                    "per-recipient modeled loss"
                 ),
             }
 
@@ -264,20 +268,8 @@ class NodeSocket:
         self.cfg = plan.link_config
         self.trace = plan.trace
 
-        self._underlay_of = {
-            node.name: (node.underlay_ip, node.underlay_port)
-            for node in plan.nodes
-        }
-        self._overlay_of = {
-            node.name: (node.overlay_ip, node.overlay_port)
-            for node in plan.nodes
-        }
-        self._name_of_overlay = {
-            address: name for name, address in self._overlay_of.items()
-        }
-        self._name_of_underlay = {
-            address: name for name, address in self._underlay_of.items()
-        }
+        self._address_of = {node.name: node.address for node in plan.nodes}
+        self._name_of_address = {address: name for name, address in self._address_of.items()}
 
         # Convert the wall-clock experiment epoch into the local monotonic clock domain.
         self._epoch_mono = time.monotonic() + plan.epoch_start - time.time()
@@ -300,10 +292,12 @@ class NodeSocket:
         # configured maximum radio data rate.
         self._buckets = {}
         self._shared_bucket = TokenBucket(self.cfg.bucket_capacity_bytes * 8)
+        # Sender-side per-recipient reservation for sustained broadcast bandwidth.
+        self._broadcast_pair_finish = {}
 
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
-            self._sock.bind(self._underlay_of[node_spec.name])
+            self._sock.bind(node_spec.address)
             self._sock.setblocking(False)
             self.metrics = MetricsCollector(
                 node_spec.name,
@@ -337,16 +331,12 @@ class NodeSocket:
     def elapsed(self):
         return time.monotonic() - self._epoch_mono
 
-    def current_tick(self):
+    def _current_mobility_tick(self):
+        """Mobility replay index derived from experiment time; never drives protocol code."""
         return max(0, int(self.elapsed() / self.plan.mobility_config.tick_interval))
 
-    def set_tick(self, tick):
-        """Compatibility guard: topology is driven only by the shared experiment clock."""
-        if type(tick) is not int or tick != self.current_tick():
-            raise ValueError("topology tick must equal the shared experiment clock")
-
     def _distance_to(self, name, tick=None):
-        tick = self.current_tick() if tick is None else tick
+        tick = self._current_mobility_tick() if tick is None else tick
         if tick not in self.trace:
             raise RuntimeError(f"mobility trace has no current tick {tick}")
         try:
@@ -443,17 +433,17 @@ class NodeSocket:
         broadcast = destination[0] == BROADCAST_IP
         if broadcast:
             # FLAME HELLO uses the broadcast address.  CLIVE realizes the broadcast on
-            # the unicast underlay by evaluating every matching virtual receiver.
+            # localhost by evaluating every matching virtual receiver and sending one local UDP datagram per reachable target.
             targets = [
                 node.name
                 for node in self.plan.nodes
                 if node.name != self.spec.name
-                and node.overlay_port == destination[1]
+                and node.port == destination[1]
             ]
         else:
-            name = self._name_of_overlay.get(destination)
+            name = self._name_of_address.get(destination)
             if name is None:
-                raise ValueError(f"unknown overlay address: {destination}")
+                raise ValueError(f"unknown localhost node address: {destination}")
             targets = [name]
 
         with self._cv:
@@ -498,6 +488,7 @@ class NodeSocket:
 
             self._pending[req["id"]] = req
             self._queued_bytes += len(data)
+            self._event(req, "admit", {"packets_admitted": 1, "bits_admitted": req["bits"]})
             self._push(time.monotonic(), "tx", req, None)
 
         # Match socket.sendto(): return bytes accepted by the local socket interface.
@@ -563,7 +554,7 @@ class NodeSocket:
         return self.cfg.max_data_rate_bps, energy_distance, None
 
     def _transmit(self, req):
-        tick = self.current_tick()
+        tick = self._current_mobility_tick()
         links = self._links_for_request(req, tick)
         airtime_rate, energy_distance, unicast_link_rate = self._radio_rate_and_distance(
             req, links
@@ -572,6 +563,28 @@ class NodeSocket:
         now = time.monotonic()
         if self.elapsed() >= self.plan.config.duration_s:
             self._cancel_pending("simulation_end")
+            return
+
+        # An out-of-range destination is not a kernel UDP transmission. Reject it
+        # before consuming rate tokens or incrementing logical radio emissions.
+        if not any(link["conditions"]["reachable"] for link in links):
+            if not links:
+                self._event(req, "local_drop", {"packets_dropped": 1}, reason="no_receivers")
+            for link in links:
+                conditions = link["conditions"]
+                self.metrics.record(
+                    "delivery_attempt", header=req["header"],
+                    counters={"delivery_attempts": 1}, packet_id=req["id"],
+                    time_s=self.elapsed(), source=self.spec.name,
+                    destination=list(self._address_of[link["name"]]),
+                    distance_m=link["distance_m"],
+                    rssi_dbm=conditions["rssi_dbm"],
+                    bandwidth_bps=conditions["bandwidth_bps"],
+                    plr=conditions["plr"], ipdv_ms=conditions["ipdv_ms"], mobility_mobility_tick=tick,
+                )
+                self._drop_delivery(req, link["name"], "unreachable",
+                                    conditions=conditions, distance_m=link["distance_m"])
+            self._finish(req)
             return
 
         bucket_key = (
@@ -623,7 +636,7 @@ class NodeSocket:
             energy_distance_policy=(
                 "farthest_reachable_receiver" if req["broadcast"] else "unicast_peer"
             ),
-            tick=tick,
+            mobility_tick=tick,
             # A broadcast has no single receiver-derived Table 3-3 bandwidth.  Its
             # per-receiver bandwidths are recorded on delivery_attempt/scheduled_delivery.
             bandwidth_bps=(None if req["broadcast"] else unicast_link_rate),
@@ -644,13 +657,13 @@ class NodeSocket:
                 packet_id=req["id"],
                 time_s=self.elapsed(),
                 source=self.spec.name,
-                destination=list(self._overlay_of[name]),
+                destination=list(self._address_of[name]),
                 distance_m=distance,
                 rssi_dbm=conditions["rssi_dbm"],
                 bandwidth_bps=conditions["bandwidth_bps"],
                 plr=conditions["plr"],
                 ipdv_ms=conditions["ipdv_ms"],
-                tick=tick,
+                mobility_tick=tick,
             )
 
             lost, rolled, threshold = self._packet_is_lost(conditions["plr"])
@@ -673,12 +686,16 @@ class NodeSocket:
             # to equal L/R for this receiver's own Table 3-3 bandwidth.  This avoids both
             # the old "weakest receiver controls everyone" rule and counting N broadcasts.
             if req["broadcast"]:
+                # Previous code delayed each broadcast packet by L/R once, which
+                # did not cap *sustained* throughput at weaker recipients. A
+                # per-recipient serialization reservation enforces each Table 3-3
+                # pairwise rate without charging N logical radio transmissions.
                 pair_rate = conditions["bandwidth_bps"]
                 sender_serialization = req["bits"] / airtime_rate
-                pair_serialization = req["bits"] / pair_rate
-                pairwise_bandwidth_delay = max(
-                    0.0, pair_serialization - sender_serialization
-                )
+                prior_finish = self._broadcast_pair_finish.get(name, now - sender_serialization)
+                pair_finish = max(now - sender_serialization, prior_finish) + req["bits"] / pair_rate
+                self._broadcast_pair_finish[name] = pair_finish
+                pairwise_bandwidth_delay = max(0.0, pair_finish - now)
             else:
                 pairwise_bandwidth_delay = 0.0
 
@@ -686,7 +703,8 @@ class NodeSocket:
             # delivery occur earlier than the link's bandwidth-imposed transmission time.
             variation = self._sample_ipdv_s(conditions["ipdv_ms"])
             extra_delay = (
-                pairwise_bandwidth_delay + self.cfg.base_delay_s + variation
+                pairwise_bandwidth_delay + self.cfg.base_delay_s +
+                distance / self.cfg.propagation_speed_mps + variation
             )
             extra_delay = max(pairwise_bandwidth_delay, extra_delay)
 
@@ -695,12 +713,13 @@ class NodeSocket:
             self._event(
                 req,
                 "scheduled_delivery",
-                target=list(self._overlay_of[name]),
+                target=list(self._address_of[name]),
                 distance_m=distance,
                 rssi_dbm=conditions["rssi_dbm"],
                 bandwidth_bps=conditions["bandwidth_bps"],
                 plr=conditions["plr"],
                 ipdv_s=variation,
+                propagation_delay_s=distance / self.cfg.propagation_speed_mps,
                 pairwise_bandwidth_delay_s=pairwise_bandwidth_delay,
                 post_transmission_delay_s=extra_delay,
             )
@@ -720,7 +739,7 @@ class NodeSocket:
         distance_m=None,
     ):
         fields = {
-            "target": list(self._overlay_of[name]),
+            "target": list(self._address_of[name]),
             "reason": reason,
         }
         if rolled is not None:
@@ -745,24 +764,24 @@ class NodeSocket:
 
     def _deliver(self, req, name):
         try:
-            self._sock.sendto(req["data"], self._underlay_of[name])
+            self._sock.sendto(req["data"], self._address_of[name])
         except OSError as exc:
-            self._drop_delivery(req, name, f"underlay_error:{exc.errno}")
+            self._drop_delivery(req, name, f"socket_error:{exc.errno}")
             self._event(
                 req,
-                "underlay_error",
-                {"underlay_errors": 1},
+                "socket_error",
+                {"socket_errors": 1},
                 error=str(exc),
             )
-            # An actual host/OS transport failure is not simulated MANET loss; invalidate
+            # An actual OS/socket transport failure is not simulated MANET loss; invalidate
             # the run instead of silently treating it as radio PLR.
             raise
         else:
             self._event(
                 req,
-                "underlay_send",
-                {"underlay_datagrams_sent": 1},
-                target=list(self._overlay_of[name]),
+                "kernel_send",
+                {"kernel_datagrams_sent": 1},
+                target=list(self._address_of[name]),
             )
 
         req["outstanding"] -= 1
@@ -771,7 +790,7 @@ class NodeSocket:
 
     def _cancel_pending(self, reason):
         # Deliveries already emitted onto the modeled radio but not yet forwarded to the
-        # underlay become per-recipient losses.  Requests not yet emitted are local drops.
+        # the local UDP socket become per-recipient losses.  Requests not yet emitted are local drops.
         seen_deliveries = set()
         for _, _, action, req, name in self._heap:
             if action == "deliver":
@@ -823,7 +842,7 @@ class NodeSocket:
             self._fatal = exc
 
     # ------------------------------------------------------------------
-    # Receiving / underlay -> overlay translation
+    # Receiving / direct localhost UDP
     # ------------------------------------------------------------------
 
     def recvfrom(self, bufsize=65535):
@@ -839,7 +858,7 @@ class NodeSocket:
             except BlockingIOError:
                 return None
 
-            name = self._name_of_underlay.get(address)
+            name = self._name_of_address.get(address)
             if name is None:
                 self.metrics.reject_unknown()
                 continue
@@ -856,10 +875,10 @@ class NodeSocket:
                     "energy_received_j": energy_rx(len(data) * 8, self.cfg),
                 },
                 time_s=self.elapsed(),
-                source=list(self._overlay_of[name]),
-                tick=self.current_tick(),
+                source=list(self._address_of[name]),
+                mobility_tick=self._current_mobility_tick(),
             )
-            return data[:bufsize], self._overlay_of[name]
+            return data[:bufsize], self._address_of[name]
 
         return None
 

@@ -1,18 +1,27 @@
-"""Process-isolated node runtime with bounded I/O and explicit timing failures."""
+"""Process-isolated CLIVE node runtime.
+
+The node process is intentionally event-driven with respect to the protocol. Mobility ticks are
+used only inside NodeSocket to look up the precomputed topology. The protocol is never
+advanced by ``tick``/``step`` calls.
+"""
 from __future__ import annotations
+
 import importlib
 import json
 import os
+import threading
 import time
 import traceback
 from collections import deque
 
-from nodesocket import BROADCAST_ADDRESS, NodeSocket
+from nodesocket import NodeSocket
 from orchestrator import EmulationPlan, atomic_json
+from protocol_interface import NullProtocol, ProtocolInterface
 
 
 class EventLog:
     """List-like append interface that streams all events and retains a small tail."""
+
     def __init__(self, path=None, tail_size=256):
         self.tail = deque(maxlen=tail_size)
         self.stream = open(path, "x", encoding="utf-8", buffering=1) if path else None
@@ -31,131 +40,102 @@ class EventLog:
             self.stream = None
 
 
-class Protocol:
-    def __init__(self, node):
-        self.node = node
-        self.events = node.events
-
-    def step(self, tick):
-        pass
-
-    def receive(self, data, source):
-        pass
-
-    def close(self):
-        pass
-
-
-class SimpleProtocol(Protocol):
-    """Dummy traffic only. Type 15 is not a FLAME packet assignment."""
-    DUMMY_PACKET_TYPE = 15
-
-    def __init__(self, node):
-        super().__init__(node)
-        self.sequence, self.next_send_s = 0, 0.0
-
-    def step(self, tick):
-        if tick * self.node.plan.mobility_config.tick_interval + 1e-9 < self.next_send_s:
-            return
-        data = bytes([self.DUMMY_PACKET_TYPE, int(self.node.spec.role) << 7])
-        data += self.sequence.to_bytes(2, "big")
-        data += f"DUMMY FROM {self.node.spec.name} AT TICK {tick}".encode()
-        self.events.append(dict(type="send", tick=tick, time_s=self.node.socket.elapsed(),
-                                accepted_bytes=self.node.sendto(data, BROADCAST_ADDRESS)))
-        self.sequence = (self.sequence + 1) & 65535
-        self.next_send_s += 1
-
-    def receive(self, data, source):
-        self.events.append(dict(type="receive", tick=self.node.socket.current_tick(),
-                                time_s=self.node.socket.elapsed(), source=list(source),
-                                data=data[4:].decode(errors="replace")))
-
-
 class TimingOverrunError(RuntimeError):
     pass
 
 
 class Node:
-    def __init__(self, spec, plan, node_socket, protocol_class=SimpleProtocol, *, event_path=None, stop_event=None):
-        self.spec, self.plan, self.socket = spec, plan, node_socket
+    """Runtime context exposed to a ProtocolInterface implementation.
+
+    Protocol implementations may call ``sendto()``, ``elapsed()`` and ``is_active()`` and may
+    create their own timer/worker threads. CLIVE only dispatches received datagrams through
+    ``on_datagram``; it does not own protocol timers.
+    """
+
+    def __init__(self, spec, plan, node_socket, protocol_class=NullProtocol, *, event_path=None, stop_event=None):
+        self.spec = spec
+        self.plan = plan
+        self.socket = node_socket
         self.stop_event = stop_event
         self.events = EventLog(event_path, plan.config.log_tail_records)
+        self._closing = threading.Event()
         self.protocol = None
         try:
+            if not isinstance(protocol_class, type) or not issubclass(protocol_class, ProtocolInterface):
+                raise TypeError("protocol class must subclass ProtocolInterface")
             self.protocol = protocol_class(self)
-            for method in ("step", "receive", "close"):
-                if not callable(getattr(self.protocol, method, None)):
-                    raise TypeError(f"protocol lacks callable {method}")
         except BaseException:
             self.events.close()
             raise
 
+    def elapsed(self):
+        return self.socket.elapsed()
+
     def sendto(self, data, destination):
         return self.socket.sendto(data, destination)
 
-    def _stopped(self):
-        return self.stop_event is not None and self.stop_event.is_set()
+    def is_active(self):
+        return (
+            not self._closing.is_set()
+            and not (self.stop_event is not None and self.stop_event.is_set())
+            and self.elapsed() < self.plan.config.duration_s
+        )
 
     def _receive_available(self):
         deadline = time.monotonic() + self.plan.config.receive_budget_s
         count = 0
         for _ in range(self.plan.config.receive_batch_size):
-            if self._stopped() or self.socket.elapsed() >= self.plan.config.duration_s or time.monotonic() >= deadline:
+            if not self.is_active() or time.monotonic() >= deadline:
                 break
             result = self.socket.recvfrom()
             if result is None:
                 break
-            self.protocol.receive(*result)
+            self.protocol.on_datagram(*result)
             count += 1
         return count
 
     def _wait_for_shared_epoch(self):
-        elapsed = self.socket.elapsed()
-        if elapsed >= self.plan.mobility_config.tick_interval:
-            raise TimingOverrunError("worker missed the shared starting quantum")
+        elapsed = self.elapsed()
+        if elapsed > self.plan.config.start_tolerance_s:
+            raise TimingOverrunError(f"worker started {elapsed:.6f}s after shared epoch")
         while elapsed < 0:
-            if self._stopped():
+            if self.stop_event is not None and self.stop_event.is_set():
                 raise RuntimeError("experiment canceled before start")
-            time.sleep(min(-elapsed, .005))
-            elapsed = self.socket.elapsed()
+            time.sleep(min(-elapsed, self.plan.config.io_poll_interval_s))
+            elapsed = self.elapsed()
+        if elapsed > self.plan.config.start_tolerance_s:
+            raise TimingOverrunError(f"worker awoke {elapsed:.6f}s after shared epoch")
 
     def run(self):
         try:
             self._wait_for_shared_epoch()
-            next_tick = 0
-            quantum = self.plan.mobility_config.tick_interval
-            while not self._stopped():
+            self.events.append({"type": "started", "time_s": self.elapsed(), "wall_time": time.time()})
+            self.protocol.start()
+
+            while self.is_active():
                 self.socket.check_health()
-                elapsed = self.socket.elapsed()
-                if elapsed >= self.plan.config.duration_s:
-                    break
-                current = int(elapsed / quantum)
-                if current > next_tick:
-                    raise TimingOverrunError(f"missed protocol tick {next_tick}; current tick is {current}")
-                if current == next_tick:
-                    self.protocol.step(current)
-                    next_tick += 1
-                elapsed = self.socket.elapsed()
-                if elapsed >= self.plan.config.duration_s:
-                    break
                 self._receive_available()
-                elapsed = self.socket.elapsed()
-                wait = min(self.plan.config.duration_s - elapsed, next_tick * quantum - elapsed,
-                           self.plan.config.io_poll_interval_s)
+                if not self.is_active():
+                    break
+                wait = min(
+                    self.plan.config.io_poll_interval_s,
+                    max(0.0, self.plan.config.duration_s - self.elapsed()),
+                )
                 if wait > 0:
                     self.socket.wait_readable(wait)
-            if self._stopped():
+
+            if self.stop_event is not None and self.stop_event.is_set() and self.elapsed() < self.plan.config.duration_s:
                 raise RuntimeError("experiment canceled by supervisor")
-            # Detect a blocking final callback instead of silently reporting success.
-            if self.socket.elapsed() > self.plan.config.duration_s + quantum:
-                raise TimingOverrunError("protocol callback exceeded the experiment deadline")
+            if self.elapsed() > self.plan.config.duration_s + self.plan.config.start_tolerance_s:
+                raise TimingOverrunError("node runtime exceeded the experiment deadline")
         finally:
-            # End networking first: a protocol close callback cannot emit late packets.
+            self._closing.set()
             try:
-                self.socket.close()
+                if self.protocol is not None:
+                    self.protocol.close()
             finally:
                 try:
-                    self.protocol.close()
+                    self.socket.close()
                 finally:
                     self.events.close()
         return self.socket.metrics.snapshot(), list(self.events)
@@ -163,13 +143,13 @@ class Node:
 
 def _load_protocol_class(path):
     if not path:
-        return SimpleProtocol
+        return NullProtocol
     if ":" not in path:
         raise ValueError("protocol_class_path must be module:ClassName")
     module, name = path.split(":", 1)
     value = getattr(importlib.import_module(module), name)
-    if not isinstance(value, type):
-        raise TypeError("protocol must be a class")
+    if not isinstance(value, type) or not issubclass(value, ProtocolInterface):
+        raise TypeError("protocol must be a ProtocolInterface subclass")
     return value
 
 
@@ -180,13 +160,23 @@ def run_node(node_name, plan_path, results_dir, protocol_class_path=None, contro
     try:
         plan = EmulationPlan.load(plan_path)
         spec = plan.node_by_name(node_name)
-        node_socket = NodeSocket(spec, plan, plan.config.seed,
-                                 log_path=os.path.join(results_dir, f"{node_name}.packets.jsonl"))
-        node = Node(spec, plan, node_socket, _load_protocol_class(protocol_class_path),
-                    event_path=os.path.join(results_dir, f"{node_name}.events.jsonl"), stop_event=stop_event)
+        node_socket = NodeSocket(
+            spec,
+            plan,
+            plan.config.seed,
+            log_path=os.path.join(results_dir, f"{node_name}.packets.jsonl"),
+        )
+        node = Node(
+            spec,
+            plan,
+            node_socket,
+            _load_protocol_class(protocol_class_path),
+            event_path=os.path.join(results_dir, f"{node_name}.events.jsonl"),
+            stop_event=stop_event,
+        )
         if control is not None:
             control.send({"status": "ready"})
-            if not control.poll(plan.config.readiness_timeout_s):
+            if not control.poll(max(60.0, plan.config.readiness_timeout_s * 2)):
                 raise TimeoutError("supervisor did not arm the ready worker")
             message = control.recv()
             if message.get("action") != "start":

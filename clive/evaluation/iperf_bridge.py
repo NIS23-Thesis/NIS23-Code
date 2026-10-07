@@ -108,11 +108,11 @@ def run_iperf(a, b, *, seconds=3, bitrate_bps=1_000_000, payload_bytes=1200):
                                         client_address = address
                                     if address != client_address:
                                         continue
-                                    sender, destination = a, (b.spec.overlay_ip, b.spec.overlay_port)
+                                    sender, destination = a, b.spec.address
                                 else:
                                     if address != server_address:
                                         continue
-                                    sender, destination = b, (a.spec.overlay_ip, a.spec.overlay_port)
+                                    sender, destination = b, a.spec.address
                                 try:
                                     sender.sendto(data, destination)
                                 except BlockingIOError:
