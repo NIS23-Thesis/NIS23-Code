@@ -102,12 +102,23 @@ def validate_plan_generation():
     require(mover.x < bounced_x, "Reflected Gauss-Markov node continues away from the edge instead of sticking")
 
 
+def validate_process_architecture():
+    core_files = [
+        ROOT / "nodebootstrapper.py",
+        ROOT / "nodesocket.py",
+        ROOT / "protocol_interface.py",
+        ROOT / "example_protocol.py",
+    ]
+    threaded = [path.name for path in core_files if "import threading" in path.read_text() or "threading.Thread" in path.read_text()]
+    require(not threaded, "Emulation runtime and probe contain no Python worker-thread implementation")
+
+
 def validate_protocol_boundary():
-    forbidden = {"step", "tick", "on_tick", "next_wakeup", "on_timer"}
+    forbidden = {"step", "tick", "on_tick"}
     present = forbidden.intersection(ProtocolInterface.__dict__)
     require(not present, "ProtocolInterface has no mobility-tick/step callback")
-    required = {"start", "on_datagram", "close"}
-    require(required.issubset(ProtocolInterface.__dict__), "ProtocolInterface exposes lifecycle + datagram callbacks only")
+    required = {"start", "on_datagram", "next_deadline", "on_timer", "close"}
+    require(required.issubset(ProtocolInterface.__dict__), "ProtocolInterface exposes datagrams plus experiment-time timer callbacks")
 
 
 def validate_end_to_end():
@@ -132,7 +143,7 @@ def validate_end_to_end():
 
         # Mobility quantum is 0.5 s while the entire test is only 0.36 s. Multiple protocol
         # sends therefore prove protocol execution is not being stepped by mobility ticks.
-        require(len(send_times) >= 6, "Protocol-owned 70 ms timers fire repeatedly inside one 500 ms mobility quantum")
+        require(len(send_times) >= 6, "Event-driven 70 ms protocol timers fire repeatedly inside one 500 ms mobility quantum")
         require(receive_count > 0, "Protocol datagrams traverse NodeSocket and reach peer callbacks")
 
 
@@ -175,6 +186,7 @@ def main():
     parser.add_argument("--stress-200", action="store_true")
     args = parser.parse_args()
     validate_plan_generation()
+    validate_process_architecture()
     validate_protocol_boundary()
     validate_end_to_end()
     if args.stress_200:

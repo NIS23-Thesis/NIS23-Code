@@ -1,12 +1,14 @@
 """Localhost CLIVE process supervisor.
 
-Each virtual node runs in its own ``multiprocessing.Process`` as required by the emulator
-design. The supervisor starts every node on this machine, waits for readiness, then arms all
-workers with one shared experiment epoch.
+Each virtual node runs in its own ``multiprocessing.Process``. Each node process in turn owns
+a separate radio/TX child process, so protocol/RX execution and CPU-heavy radio calculations
+do not share a Python GIL. The supervisor waits for readiness and then arms all workers with
+one shared experiment epoch.
 """
 from __future__ import annotations
 
 import multiprocessing as mp
+from multiprocessing.connection import wait as wait_connections
 import os
 import tempfile
 import time
@@ -45,7 +47,7 @@ class Emulator:
                 for name in fields:
                     by_type[str(packet_type)][name] += values.get(name, 0)
         return {
-            "schema_version": 4,
+            "schema_version": 5,
             "success": all(row["success"] for row in nodes.values()),
             "totals": totals,
             "by_packet_type": {key: dict(value) for key, value in sorted(by_type.items())},
@@ -72,9 +74,14 @@ class Emulator:
             "success": False,
             "status": "starting",
             "execution": "localhost",
+            "process_architecture": "one node process + one radio child process per virtual node",
+            "emulation_worker_threads": 0,
+            "gil_isolation": "node/protocol and radio/TX execute in separate OS processes",
             "nodes": [n.name for n in nodes],
             "started_at": time.time(),
             "plan_path": local_plan_path,
+            "mobility_path": os.path.join(self.run_dir, "mobility.bin"),
+            "mobility_storage": dict(self.plan.trace_storage or {}),
             "protocol": self.protocol_class_path or "protocol_interface:NullProtocol",
             "failures": [],
         }
@@ -119,23 +126,27 @@ class Emulator:
 
             deadline = time.monotonic() + self.plan.config.readiness_timeout_s
             ready = set()
-            while len(ready) < len(workers):
-                for node, process, connection in workers:
-                    if node.name in ready:
-                        continue
-                    if connection.poll():
-                        try:
-                            message = connection.recv()
-                        except EOFError:
-                            raise RuntimeError(f"{node.name} closed its control pipe before readiness")
-                        if message.get("status") != "ready":
-                            raise RuntimeError(f"{node.name} initialization failed: {message}")
-                        ready.add(node.name)
-                    elif process.exitcode is not None:
-                        raise RuntimeError(f"{node.name} exited before readiness ({process.exitcode})")
-                if time.monotonic() >= deadline:
+            connection_to_worker = {connection: (node, process) for node, process, connection in workers}
+            pending_connections = set(connection_to_worker)
+            while pending_connections:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
                     raise TimeoutError(f"workers did not become ready in time ({len(ready)}/{len(workers)})")
-                time.sleep(0.002)
+                readable = wait_connections(pending_connections, timeout=min(0.25, remaining))
+                for connection in readable:
+                    node, process = connection_to_worker[connection]
+                    try:
+                        message = connection.recv()
+                    except EOFError:
+                        raise RuntimeError(f"{node.name} closed its control pipe before readiness")
+                    if message.get("status") != "ready":
+                        raise RuntimeError(f"{node.name} initialization failed: {message}")
+                    ready.add(node.name)
+                    pending_connections.discard(connection)
+                for connection in tuple(pending_connections):
+                    node, process = connection_to_worker[connection]
+                    if process.exitcode is not None:
+                        raise RuntimeError(f"{node.name} exited before readiness ({process.exitcode})")
 
             manifest.update(
                 status="ready",
@@ -162,19 +173,25 @@ class Emulator:
                 + self.plan.config.duration_s
                 + self.plan.config.worker_grace_s
             )
+            live_connections = {connection: (node, process) for node, process, connection in workers}
             while any(process.is_alive() for _, process, _ in workers):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("worker exceeded experiment deadline and shutdown grace")
+                readable = wait_connections(list(live_connections), timeout=min(0.05, remaining)) if live_connections else []
+                for connection in readable:
+                    node, process = live_connections[connection]
+                    try:
+                        message = connection.recv()
+                    except EOFError:
+                        live_connections.pop(connection, None)
+                        message = None
+                    handle_worker_message(node, message)
                 for node, process, connection in workers:
-                    if connection.poll():
-                        try:
-                            message = connection.recv()
-                        except EOFError:
-                            message = None
-                        handle_worker_message(node, message)
                     if process.exitcode not in (None, 0):
                         raise RuntimeError(f"worker {node.name} failed with exit code {process.exitcode}")
-                if time.monotonic() >= deadline:
-                    raise TimeoutError("worker exceeded experiment deadline and shutdown grace")
-                time.sleep(0.01)
+                    if process.exitcode is not None:
+                        live_connections.pop(connection, None)
 
             for node, process, connection in workers:
                 process.join()

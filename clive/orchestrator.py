@@ -19,10 +19,16 @@ import math
 import os
 import random
 import re
+import shutil
 import tempfile
 import time
 from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
+
+from mobility_store import (
+    DictTraceReader, MappedTraceReader, trace_digest_from_dict,
+    validate_trace_file, write_trace,
+)
 
 
 class NodeRole(enum.IntEnum):
@@ -348,7 +354,7 @@ class EmulationConfig:
     duration_s: float = 300.0
     seed: int = 0
     startup_delay_s: float = 2.0
-    io_poll_interval_s: float = 0.002
+    io_poll_interval_s: float = 0.01
     receive_batch_size: int = 64
     receive_budget_s: float = 0.002
     max_queue_packets: int = 4096
@@ -408,26 +414,56 @@ class LoggingConfig:
 @dataclass
 class EmulationPlan:
     nodes: List[NodeSpec]
-    trace: Dict[int, Dict[str, List[float]]]
+    trace: Optional[Dict[int, Dict[str, List[float]]]]
     link_config: LinkConfig
     mobility_config: MobilityConfig
     config: EmulationConfig
     epoch_start: float
     logging_config: LoggingConfig = field(default_factory=LoggingConfig)
+    trace_storage: Optional[Dict[str, Any]] = None
+
+    def _node_names(self):
+        return [node.name for node in self.nodes]
+
+    @property
+    def tick_count(self) -> int:
+        if self.trace is not None:
+            return len(self.trace)
+        if self.trace_storage is None:
+            return 0
+        return int(self.trace_storage["tick_count"])
+
+    @property
+    def trace_file_path(self) -> Optional[str]:
+        return getattr(self, "_trace_path", None)
+
+    def open_trace(self):
+        if self.trace is not None:
+            return DictTraceReader(self.trace, self._node_names())
+        path = self.trace_file_path
+        if not path or self.trace_storage is None:
+            raise RuntimeError("mobility trace storage is not attached to this plan")
+        return MappedTraceReader(path, self.trace_storage, self._node_names())
 
     def trace_digest(self):
         cached = getattr(self, "_trace_digest_cache", None)
         if cached is not None:
             return cached
-        raw = json.dumps(self.trace, sort_keys=True, separators=(",", ":"), allow_nan=False)
-        digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+        if self.trace_storage and self.trace_storage.get("sha256"):
+            digest = self.trace_storage["sha256"]
+        elif self.trace is not None:
+            digest = trace_digest_from_dict(self.trace, self._node_names())
+        else:
+            raise RuntimeError("plan has no mobility trace")
         self._trace_digest_cache = digest
         return digest
 
     def to_dict(self):
+        if self.trace_storage is None:
+            raise RuntimeError("plan must be saved once before it can be serialized")
         return {
             "nodes": [n.to_dict() for n in self.nodes],
-            "trace": {str(k): v for k, v in self.trace.items()},
+            "trace_storage": dict(self.trace_storage),
             "link_config": self.link_config.to_dict(),
             "mobility_config": self.mobility_config.to_dict(),
             "config": self.config.to_dict(),
@@ -437,17 +473,28 @@ class EmulationPlan:
         }
 
     @classmethod
-    def from_dict(cls, d):
+    def from_dict(cls, d, *, plan_dir=None):
+        # New plans reference one compact binary mobility file. Legacy inline traces remain
+        # readable and are converted to binary the next time the plan is saved.
+        inline = d.get("trace")
         plan = cls(
             [NodeSpec.from_dict(n) for n in d["nodes"]],
-            {int(k): v for k, v in d["trace"].items()},
+            {int(k): v for k, v in inline.items()} if inline is not None else None,
             LinkConfig.from_dict(d["link_config"]),
             MobilityConfig.from_dict(d["mobility_config"]),
             EmulationConfig.from_dict(d["config"]),
             d["epoch_start"],
             LoggingConfig.from_dict(d.get("logging_config", {})),
+            dict(d["trace_storage"]) if d.get("trace_storage") is not None else None,
         )
-        if "trace_sha256" in d and d["trace_sha256"] != plan.trace_digest():
+        if plan.trace_storage is not None:
+            if plan_dir is None:
+                raise ValueError("plan directory is required for binary mobility storage")
+            plan._trace_path = os.path.abspath(
+                os.path.join(plan_dir, plan.trace_storage.get("file", "mobility.bin"))
+            )
+        expected_digest = d.get("trace_sha256")
+        if expected_digest and expected_digest != plan.trace_digest():
             raise ValueError("mobility trace digest mismatch")
         plan.validate()
         return plan
@@ -460,8 +507,6 @@ class EmulationPlan:
         finite(self.epoch_start, "epoch_start", 0, strictly=True)
         if not self.nodes:
             raise ValueError("an emulation plan must contain at least one node")
-        if not self.trace:
-            raise ValueError("an emulation plan must contain a mobility trace")
 
         for node in self.nodes:
             node.validate()
@@ -477,54 +522,84 @@ class EmulationPlan:
             raise ValueError("node addresses must be unique")
 
         expected_ticks = int(self.config.duration_s / self.mobility_config.tick_interval) + 1
-        if len(self.trace) < expected_ticks:
-            raise ValueError(
-                f"mobility trace is incomplete: expected at least {expected_ticks} ticks, got {len(self.trace)}"
-            )
         expected_names = set(names)
-        for tick in range(expected_ticks):
-            positions = self.trace.get(tick)
-            if positions is None:
-                raise ValueError(f"mobility trace is missing tick {tick}")
-            if set(positions) != expected_names:
-                raise ValueError(f"mobility trace tick {tick} has inconsistent nodes")
-            for name, position in positions.items():
-                if not isinstance(position, (list, tuple)) or len(position) != 2:
-                    raise ValueError(f"invalid coordinates for {name} at tick {tick}")
-                for value in position:
-                    finite(value, f"coordinates for {name}")
-                if not (
-                    0 <= position[0] <= self.mobility_config.area_width_m
-                    and 0 <= position[1] <= self.mobility_config.area_height_m
-                ):
-                    raise ValueError(f"coordinates outside simulation area for {name}")
+        if self.trace is not None:
+            if len(self.trace) < expected_ticks:
+                raise ValueError(
+                    f"mobility trace is incomplete: expected at least {expected_ticks} ticks, got {len(self.trace)}"
+                )
+            for tick in range(expected_ticks):
+                positions = self.trace.get(tick)
+                if positions is None:
+                    raise ValueError(f"mobility trace is missing tick {tick}")
+                if set(positions) != expected_names:
+                    raise ValueError(f"mobility trace tick {tick} has inconsistent nodes")
+                for name, position in positions.items():
+                    if not isinstance(position, (list, tuple)) or len(position) != 2:
+                        raise ValueError(f"invalid coordinates for {name} at tick {tick}")
+                    for value in position:
+                        finite(value, f"coordinates for {name}")
+                    if not (
+                        0 <= position[0] <= self.mobility_config.area_width_m
+                        and 0 <= position[1] <= self.mobility_config.area_height_m
+                    ):
+                        raise ValueError(f"coordinates outside simulation area for {name}")
+        elif self.trace_storage is not None:
+            if int(self.trace_storage.get("tick_count", -1)) < expected_ticks:
+                raise ValueError("mobility binary does not contain enough ticks")
+            if int(self.trace_storage.get("node_count", -1)) != len(names):
+                raise ValueError("mobility binary node count does not match plan")
+            path = self.trace_file_path
+            if path and os.path.exists(path):
+                validate_trace_file(path, self.trace_storage, verify_digest=False)
+        else:
+            raise ValueError("an emulation plan must contain mobility trace storage")
 
     def save(self, path: str):
         self.validate()
+        path = os.path.abspath(path)
+        parent = os.path.dirname(path)
+        os.makedirs(parent, exist_ok=True)
+        mobility_path = os.path.join(parent, "mobility.bin")
+
+        if self.trace is not None:
+            self.trace_storage = write_trace(mobility_path, self.trace, self._node_names())
+            self._trace_path = mobility_path
+            self._trace_digest_cache = self.trace_storage["sha256"]
+        else:
+            source = self.trace_file_path
+            if not source or not os.path.exists(source):
+                raise FileNotFoundError("plan mobility.bin is unavailable")
+            if os.path.abspath(source) != os.path.abspath(mobility_path):
+                shutil.copyfile(source, mobility_path)
+            self._trace_path = mobility_path
+            self.trace_storage = dict(self.trace_storage or {})
+            self.trace_storage["file"] = "mobility.bin"
+            validate_trace_file(mobility_path, self.trace_storage, verify_digest=False)
+
         atomic_json(path, self.to_dict())
 
     def save_trace(self, path):
-        """Row-per-mobility-quantum TSV: elapsed time followed by each node x/y pair."""
+        """Optional human-readable row-per-mobility-quantum TSV export."""
         self.validate()
-        with open(path, "x", encoding="utf-8") as stream:
-            stream.write("time_s\t" + "\t".join(f"{n.name}_x\t{n.name}_y" for n in self.nodes) + "\n")
-            for tick in sorted(self.trace):
-                values = [self.time_for_tick(tick)]
-                for node in self.nodes:
-                    values.extend(self.trace[tick][node.name])
-                stream.write("\t".join(format(value, ".12g") for value in values) + "\n")
+        with self.open_trace() as trace:
+            with open(path, "x", encoding="utf-8") as stream:
+                stream.write("time_s\t" + "\t".join(f"{n.name}_x\t{n.name}_y" for n in self.nodes) + "\n")
+                for tick in range(self.tick_count):
+                    values = [self.time_for_tick(tick), *trace.frame_flat(tick)]
+                    stream.write("\t".join(format(value, ".12g") for value in values) + "\n")
 
     @classmethod
     def load(cls, path: str):
+        path = os.path.abspath(path)
         with open(path, encoding="utf-8") as stream:
-            return cls.from_dict(
-                json.load(
-                    stream,
-                    parse_constant=lambda value: (_ for _ in ()).throw(
-                        ValueError(f"non-finite JSON value {value}")
-                    ),
-                )
+            data = json.load(
+                stream,
+                parse_constant=lambda value: (_ for _ in ()).throw(
+                    ValueError(f"non-finite JSON value {value}")
+                ),
             )
+        return cls.from_dict(data, plan_dir=os.path.dirname(path))
 
     def node_by_name(self, name: str) -> NodeSpec:
         for node in self.nodes:
@@ -534,7 +609,6 @@ class EmulationPlan:
 
     def time_for_tick(self, tick: int) -> float:
         return tick * self.mobility_config.tick_interval
-
 
 def _stable_node_seed(seed: int, name: str, namespace: str = "mobility") -> int:
     raw = f"{namespace}:{seed}:{name}".encode("utf-8")
@@ -917,7 +991,7 @@ class Orchestrator:
         runtime.setdefault("duration_s", scenario.get("duration", 300.0))
         runtime.setdefault("seed", scenario.get("seed", 0))
         runtime.setdefault("startup_delay_s", scenario.get("startup_delay_s", 2.0))
-        runtime.setdefault("io_poll_interval_s", scenario.get("io_poll_interval_s", 0.002))
+        runtime.setdefault("io_poll_interval_s", scenario.get("io_poll_interval_s", 0.01))
         # Old configs may still contain this field. Packet-log tails no longer exist.
         runtime.pop("log_tail_records", None)
         config = EmulationConfig(**runtime)

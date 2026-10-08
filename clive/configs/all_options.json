@@ -5,7 +5,7 @@
     "duration_s": 10.0,
     "seed": 810,
     "startup_delay_s": 1.0,
-    "io_poll_interval_s": 0.002,
+    "io_poll_interval_s": 0.01,
     "receive_batch_size": 64,
     "receive_budget_s": 0.002,
     "max_queue_packets": 4096,

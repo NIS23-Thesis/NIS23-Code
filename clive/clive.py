@@ -57,6 +57,9 @@ def main():
     with tempfile.TemporaryDirectory(prefix="clive-plan-") as directory:
         path = os.path.join(directory, "plan.json")
         plan.save(path)
+        # The prepared in-memory dict trace is no longer needed once mobility.bin exists.
+        # Release it before launching hundreds of worker processes.
+        plan.trace = None
         print(Emulator(path, args.results, protocol_class_path=args.protocol).run())
 
 

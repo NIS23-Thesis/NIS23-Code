@@ -1,6 +1,6 @@
 # CLIVE — localhost MANET emulator
 
-CLIVE runs virtual MANET nodes as independent localhost Python processes using real UDP sockets. The Orchestrator precomputes mobility, the Emulator supervises processes, NodeSocket applies link conditions, and a protocol implementation plugs in through `ProtocolInterface`. Mobility ticks do not drive protocol timers.
+CLIVE runs virtual MANET nodes as independent localhost Python processes using real UDP sockets. Each virtual node has a dedicated **node/protocol process** and a dedicated **radio/TX child process**. The emulation runtime uses no Python worker threads, so node/protocol execution and CPU-heavy radio calculations never contend for the same process GIL. Mobility ticks do not drive protocol timers.
 
 ## Clean project layout
 
@@ -8,9 +8,10 @@ CLIVE runs virtual MANET nodes as independent localhost Python processes using r
 clive/
 ├── clive.py                    # CLI entry point
 ├── orchestrator.py             # scenario config + mobility/topology trace generation
+├── mobility_store.py           # compact binary trace + read-only mmap access
 ├── emulator.py                 # process supervisor
-├── nodebootstrapper.py         # per-node runtime
-├── nodesocket.py               # UDP/link emulation + metrics
+├── nodebootstrapper.py         # single-threaded per-node protocol/RX process
+├── nodesocket.py               # RX proxy + separate radio/TX child process
 ├── protocol_interface.py       # protocol integration boundary
 ├── example_protocol.py         # validation/demo traffic only
 ├── visualizer.py               # read-only visualization server
@@ -33,6 +34,26 @@ clive/
 ```
 
 Generated results, Python caches, old LAN/deployment files, unrelated coursework files, and duplicate documentation are intentionally excluded.
+
+
+## Process/GIL architecture
+
+```text
+Emulator supervisor
+│
+├── CH-1 node/protocol process     (single Python execution thread / own GIL)
+│   └── CH-1 radio/TX child process (single Python execution thread / own GIL)
+├── CH-2 node/protocol process
+│   └── CH-2 radio/TX child process
+└── ...
+```
+
+The node process handles UDP receive, protocol callbacks, and experiment-time protocol timers.
+The radio child handles TX scheduling, broadcast fan-out, distance/RSSI/bandwidth/PLR/IPDV, TX
+energy, and the actual UDP `sendto()`. Communication between the two is through
+`multiprocessing.Pipe`. There is no sender thread and the validation probe no longer creates a
+timer thread. The browser visualizer is a separate application process; its HTTP implementation
+is not part of the emulation execution path.
 
 ## Demo tomorrow
 
@@ -107,7 +128,7 @@ Run the complete non-stress suite:
 python3 validation/run_all.py
 ```
 
-Optional 200-process stress check:
+Optional 200-node stress check (200 node processes + 200 radio child processes):
 
 ```bash
 python3 validation/validate_clive.py --stress-200
@@ -121,8 +142,11 @@ See `configs/README.md`. The main mobility modes are `gauss_markov`, `random_way
 
 By default each run keeps only the files needed for normal evaluation and replay:
 
-- `plan.json` - canonical emulation plan, including the precomputed mobility trace.
+- `plan.json` - small canonical metadata/configuration plan; it does **not** embed the full trace.
+- `mobility.bin` - one compact float64 mobility trace shared read-only by radio processes.
 - `run-manifest.json` - run status and provenance.
 - `metrics.json` - one compact run-level metrics file containing totals and per-node counters.
 
-Verbose per-node `*.events.jsonl` and `*.packets.jsonl` files are disabled by default. They can be enabled with the scenario `logging` section and are then stored under `debug/`. `mobility.tsv` is also optional because its coordinates duplicate the trace already stored in `plan.json`.
+Verbose per-node `*.events.jsonl` and `*.packets.jsonl` files are disabled by default. They can be enabled with the scenario `logging` section and are then stored under `debug/`. `mobility.tsv` is optional and is only a human-readable export of the canonical `mobility.bin` trace.
+
+For a 110-node, 300-second run at a 0.1-second mobility interval, `mobility.bin` is about 5.28 MB total. The same trace previously produced a ~26 MB JSON plan and was deserialized into every node process.

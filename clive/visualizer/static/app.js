@@ -279,12 +279,34 @@ async function refreshTrace() {
   if (!state.meta || !state.run) return;
   const run = state.run;
   try {
-    const trace = await api(`/api/trace?${runQueryFor(run)}`);
-    if (run !== state.run || !trace.ready) return;
-    if (!Array.isArray(trace.frames) || !Array.isArray(trace.node_names)) {
-      throw new Error("invalid mobility trace payload");
-    }
-    state.mobilityTrace = trace;
+    const response = await fetch(`/api/mobility.bin?${runQueryFor(run)}`, {cache: "no-store"});
+    if (!response.ok) throw new Error(`mobility trace request failed: ${response.status}`);
+    const buffer = await response.arrayBuffer();
+    if (run !== state.run) return;
+    if (buffer.byteLength < 20) throw new Error("invalid mobility binary: truncated header");
+
+    const headerBytes = new Uint8Array(buffer, 0, 8);
+    const magic = String.fromCharCode(...headerBytes);
+    const view = new DataView(buffer);
+    const version = view.getUint32(8, true);
+    const nodeCount = view.getUint32(12, true);
+    const tickCount = view.getUint32(16, true);
+    if (magic !== "CLVMOB01" || version !== 1) throw new Error("unsupported mobility binary format");
+    if (nodeCount !== state.meta.nodes.length) throw new Error("mobility binary node count mismatch");
+    const expectedBytes = 20 + tickCount * nodeCount * 2 * 8;
+    if (buffer.byteLength !== expectedBytes) throw new Error("mobility binary size mismatch");
+
+    state.mobilityTrace = {
+      ready: true,
+      tick_interval_s: state.meta.tick_interval_s,
+      duration_s: state.meta.duration_s,
+      node_names: state.meta.nodes.map(n => n.name),
+      node_roles: state.meta.nodes.map(n => n.role),
+      node_count: nodeCount,
+      tick_count: tickCount,
+      view,
+      data_offset: 20,
+    };
     state.currentTick = -1;
     setFrameFromTrace(true);
     $("canvasEmpty").style.display = "none";
@@ -299,19 +321,20 @@ async function refreshTrace() {
 
 function setFrameFromTrace(force = false) {
   const trace = state.mobilityTrace;
-  if (!trace || !state.meta || !trace.frames.length) return;
+  if (!trace || !state.meta || !trace.tick_count) return;
   const interval = Math.max(1e-9, Number(trace.tick_interval_s));
-  const tick = clamp(Math.floor((state.currentTime + 1e-9) / interval), 0, trace.frames.length - 1);
+  const tick = clamp(Math.floor((state.currentTime + 1e-9) / interval), 0, trace.tick_count - 1);
   if (!force && tick === state.currentTick) return;
 
-  const flat = trace.frames[tick];
-  const positions = new Array(trace.node_names.length);
-  for (let i = 0; i < trace.node_names.length; i++) {
+  const positions = new Array(trace.node_count);
+  const frameOffset = trace.data_offset + tick * trace.node_count * 16;
+  for (let i = 0; i < trace.node_count; i++) {
+    const offset = frameOffset + i * 16;
     positions[i] = {
       name: trace.node_names[i],
       role: trace.node_roles[i],
-      x: Number(flat[i * 2]),
-      y: Number(flat[i * 2 + 1]),
+      x: trace.view.getFloat64(offset, true),
+      y: trace.view.getFloat64(offset + 8, true),
     };
   }
 

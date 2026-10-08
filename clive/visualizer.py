@@ -1,7 +1,8 @@
 """CLIVE localhost visualization server.
 
 The visualizer is deliberately observational: it reads CLIVE's run artifacts. plan.json
-provides the exact mobility trace and topology, metrics.json provides compact final counters,
+provides topology/configuration metadata, mobility.bin provides the exact trace, and metrics.json
+provides compact final counters.
 and optional debug JSONL streams are used only when diagnostic logging is enabled. The
 visualizer never calls protocol code or advances mobility/protocol timers.
 
@@ -151,7 +152,7 @@ class RunData:
                 "manifest": manifest,
                 "duration_s": plan.config.duration_s,
                 "tick_interval_s": plan.mobility_config.tick_interval,
-                "tick_count": len(plan.trace),
+                "tick_count": plan.tick_count,
                 "nodes": [
                     {
                         "name": node.name,
@@ -170,6 +171,7 @@ class RunData:
                 "protocol": manifest.get("protocol", "protocol_interface:NullProtocol"),
                 "epoch_start": plan.epoch_start,
                 "trace_sha256": plan.trace_digest(),
+                "trace_storage": dict(plan.trace_storage or {}),
             }
 
     def mobility_trace(self):
@@ -183,22 +185,22 @@ class RunData:
             self._refresh_plan()
             if self._plan is None:
                 return {"ready": False}
-            if (
-                self._trace_payload_cache is not None
-                and self._trace_payload_mtime_ns == self._plan_mtime_ns
-            ):
-                return self._trace_payload_cache
-
             plan = self._plan
             nodes = list(plan.nodes)
+            trace_mtime = None
+            if plan.trace_file_path:
+                try:
+                    trace_mtime = os.stat(plan.trace_file_path).st_mtime_ns
+                except FileNotFoundError:
+                    trace_mtime = None
+            cache_stamp = (self._plan_mtime_ns, trace_mtime)
+            if self._trace_payload_cache is not None and self._trace_payload_mtime_ns == cache_stamp:
+                return self._trace_payload_cache
+
             frames = []
-            for tick in sorted(plan.trace):
-                positions = plan.trace[tick]
-                flat = []
-                for node in nodes:
-                    x, y = positions[node.name]
-                    flat.extend((x, y))
-                frames.append(flat)
+            with plan.open_trace() as trace:
+                for tick in range(plan.tick_count):
+                    frames.append(list(trace.frame_flat(tick)))
 
             payload = {
                 "ready": True,
@@ -210,11 +212,22 @@ class RunData:
                 "frames": frames,
             }
             self._trace_payload_cache = payload
-            self._trace_payload_mtime_ns = self._plan_mtime_ns
+            self._trace_payload_mtime_ns = cache_stamp
             return payload
 
+    def mobility_binary_path(self):
+        """Return the validated canonical mobility binary for direct browser streaming."""
+        with self._plan_lock:
+            self._refresh_plan()
+            if self._plan is None or not self._plan.trace_file_path:
+                raise FileNotFoundError("mobility.bin is not ready")
+            path = Path(self._plan.trace_file_path)
+            if not path.is_file():
+                raise FileNotFoundError("mobility.bin is not ready")
+            return path
+
     def frame(self, time_s):
-        """Return one exact trace tick. Kept for diagnostics; normal playback uses /api/trace."""
+        """Return one exact trace tick. Kept for diagnostics; normal playback uses mobility.bin."""
         with self._plan_lock:
             self._refresh_plan()
             if self._plan is None:
@@ -222,22 +235,24 @@ class RunData:
             plan = self._plan
             requested = max(0.0, min(plan.config.duration_s, _safe_float(time_s)))
             interval = plan.mobility_config.tick_interval
-            tick = min(int(requested / interval), max(plan.trace))
-            positions = plan.trace[tick]
+            tick = min(int(requested / interval), plan.tick_count - 1)
+            with plan.open_trace() as trace:
+                flat = trace.frame_flat(tick)
+                positions = []
+                for i, node in enumerate(plan.nodes):
+                    j = i * 2
+                    positions.append({
+                        "name": node.name,
+                        "role": int(node.role),
+                        "x": flat[j],
+                        "y": flat[j + 1],
+                    })
             return {
                 "ready": True,
                 "requested_time_s": requested,
                 "tick": tick,
                 "tick_time_s": plan.time_for_tick(tick),
-                "positions": [
-                    {
-                        "name": node.name,
-                        "role": int(node.role),
-                        "x": positions[node.name][0],
-                        "y": positions[node.name][1],
-                    }
-                    for node in plan.nodes
-                ],
+                "positions": positions,
             }
 
 
@@ -532,6 +547,23 @@ class VisualizerHandler(SimpleHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             return
 
+    def _binary_file(self, path: Path, content_type="application/octet-stream"):
+        try:
+            size = path.stat().st_size
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(size))
+            self.end_headers()
+            with path.open("rb") as stream:
+                while True:
+                    block = stream.read(1024 * 1024)
+                    if not block:
+                        break
+                    self.wfile.write(block)
+        except (BrokenPipeError, ConnectionResetError):
+            return
+
     def _run_from_query(self, query):
         name = query.get("run", [None])[0]
         return self.catalog.get(name)
@@ -552,7 +584,11 @@ class VisualizerHandler(SimpleHTTPRequestHandler):
 
                 if parsed.path == "/api/meta":
                     self._json(run.meta())
+                elif parsed.path == "/api/mobility.bin":
+                    self._binary_file(run.mobility_binary_path())
                 elif parsed.path == "/api/trace":
+                    # Legacy/diagnostic JSON endpoint. Normal playback streams mobility.bin
+                    # directly so Python does not materialize the full trace as nested JSON.
                     self._json(run.mobility_trace())
                 elif parsed.path == "/api/frame":
                     self._json(run.frame(query.get("time_s", [0])[0]))

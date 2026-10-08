@@ -8,6 +8,8 @@ ROOT = Path(__file__).resolve().parents[1]
 CHECKS = [
     "validate_configs.py",
     "validate_features.py",
+    "validate_mobility_storage.py",
+    "validate_optimizations.py",
     "validate_nodesocket.py",
     "validate_visualizer.py",
     "validate_clive.py",

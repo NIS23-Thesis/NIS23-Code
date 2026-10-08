@@ -1,9 +1,9 @@
 """Protocol integration contract for CLIVE.
 
-CLIVE never advances a protocol with mobility ticks. A protocol is started once, receives
-incoming datagrams through ``on_datagram()``, and is closed once. Any HELLO timers,
-retransmission timers, sampling intervals, FL aggregation timers, or worker threads belong
-to the protocol implementation itself.
+CLIVE never advances a protocol from mobility ticks. Protocol timers are represented as
+experiment-time deadlines serviced by the node process event loop; CPU-heavy radio work is
+isolated in a separate radio process. This avoids protocol worker threads and their GIL
+contention while keeping protocol timing independent from mobility trace ticks.
 """
 from __future__ import annotations
 
@@ -18,14 +18,23 @@ class ProtocolInterface(ABC):
 
     @abstractmethod
     def start(self) -> None:
-        """Initialize protocol state/modules after the shared experiment epoch begins."""
+        """Initialize protocol state after the shared experiment epoch begins."""
 
     @abstractmethod
     def on_datagram(self, data: bytes, source: tuple[str, int]) -> None:
         """Handle one datagram delivered by NodeSocket."""
 
+    def next_deadline(self):
+        """Return the next absolute experiment-time deadline in seconds, or None."""
+        return None
+
+    def on_timer(self, now_s: float) -> None:
+        """Handle a due protocol timer. The default protocol has no timer work."""
+        return None
+
     def close(self) -> None:
-        """Stop protocol-owned workers/timers and release protocol resources."""
+        """Release protocol resources. Protocols should not create Python worker threads."""
+        return None
 
 
 class NullProtocol(ProtocolInterface):

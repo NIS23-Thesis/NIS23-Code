@@ -1,9 +1,9 @@
 {
-  "num_ch": 1,
-  "num_sn": 10,
+  "num_ch": 10,
+  "num_sn": 1,
   "runtime": {
     "duration_s": 60,
-    "seed": 1,
+    "seed": 810,
     "startup_delay_s": 1.0,
     "readiness_timeout_s": 45.0,
     "start_tolerance_s": 1.0
@@ -32,5 +32,11 @@
       0.5,
       1.5
     ]
-  }
+  },
+  "logging": {
+  "protocol_events": true,
+  "packet_events": true,
+  "mobility_tsv": false
+}
+
 }

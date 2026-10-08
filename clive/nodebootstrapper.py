@@ -9,7 +9,6 @@ from __future__ import annotations
 import importlib
 import json
 import os
-import threading
 import time
 import traceback
 
@@ -41,9 +40,10 @@ class TimingOverrunError(RuntimeError):
 class Node:
     """Runtime context exposed to a ProtocolInterface implementation.
 
-    Protocol implementations may call ``sendto()``, ``elapsed()`` and ``is_active()`` and may
-    create their own timer/worker threads. CLIVE only dispatches received datagrams through
-    ``on_datagram``; it does not own protocol timers.
+    Protocol implementations may call ``sendto()``, ``elapsed()`` and ``is_active()``.
+    Protocol timers are serviced by this process's event loop through ``next_deadline()`` /
+    ``on_timer()``; mobility ticks never drive protocol execution. CPU-heavy radio work runs
+    in a separate child process, so the node runtime itself has no worker-thread GIL contention.
     """
 
     def __init__(self, spec, plan, node_socket, protocol_class=NullProtocol, *, event_path=None, stop_event=None):
@@ -52,7 +52,7 @@ class Node:
         self.socket = node_socket
         self.stop_event = stop_event
         self.events = EventLog(event_path)
-        self._closing = threading.Event()
+        self._closing = False
         self.protocol = None
         try:
             if not isinstance(protocol_class, type) or not issubclass(protocol_class, ProtocolInterface):
@@ -70,7 +70,7 @@ class Node:
 
     def is_active(self):
         return (
-            not self._closing.is_set()
+            not self._closing
             and not (self.stop_event is not None and self.stop_event.is_set())
             and self.elapsed() < self.plan.config.duration_s
         )
@@ -95,7 +95,7 @@ class Node:
         while elapsed < 0:
             if self.stop_event is not None and self.stop_event.is_set():
                 raise RuntimeError("experiment canceled before start")
-            time.sleep(min(-elapsed, self.plan.config.io_poll_interval_s))
+            time.sleep(min(-elapsed, 0.005))
             elapsed = self.elapsed()
         if elapsed > self.plan.config.start_tolerance_s:
             raise TimingOverrunError(f"worker awoke {elapsed:.6f}s after shared epoch")
@@ -108,13 +108,30 @@ class Node:
 
             while self.is_active():
                 self.socket.check_health()
+
+                # Service due protocol timers from experiment time. This is independent of
+                # mobility ticks and uses no Python worker thread. Bound each pass so a badly
+                # overdue protocol cannot starve receive processing indefinitely.
+                timer_budget = 64
+                while timer_budget > 0 and self.is_active():
+                    deadline = self.protocol.next_deadline()
+                    now_s = self.elapsed()
+                    if deadline is None or deadline > now_s:
+                        break
+                    self.protocol.on_timer(now_s)
+                    timer_budget -= 1
+
                 self._receive_available()
                 if not self.is_active():
                     break
+
                 wait = min(
                     self.plan.config.io_poll_interval_s,
                     max(0.0, self.plan.config.duration_s - self.elapsed()),
                 )
+                deadline = self.protocol.next_deadline()
+                if deadline is not None:
+                    wait = min(wait, max(0.0, deadline - self.elapsed()))
                 if wait > 0:
                     self.socket.wait_readable(wait)
 
@@ -123,7 +140,7 @@ class Node:
             if self.elapsed() > self.plan.config.duration_s + self.plan.config.start_tolerance_s:
                 raise TimingOverrunError("node runtime exceeded the experiment deadline")
         finally:
-            self._closing.set()
+            self._closing = True
             try:
                 if self.protocol is not None:
                     self.protocol.close()
