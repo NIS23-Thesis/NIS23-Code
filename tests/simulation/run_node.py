@@ -13,25 +13,57 @@ an operator-facing simulation harness, not a second protocol implementation.
 from __future__ import annotations
 
 import argparse
+import csv
+import hashlib
+import pickle
 import readline
 import shlex
 import sys
 import threading
 import time
 import os
+from datetime import datetime, timezone
 from pathlib import Path
+from queue import Empty, Queue
 from typing import Any, Optional
+
+from PIL import Image
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
-from flame.communication import CommunicationModule, PacketType, SocketInterface
-from flame.neighbor import AssociationState, NeighborModule
+from flame.communication import (
+    CommunicationModule,
+    PacketType,
+    SocketInterface,
+    parse_datagram,
+)
+from flame.federated_learning import (
+    Aggregation,
+    DatasetManager,
+    DatasetStorage,
+    FederatedLearningModule,
+    MNISTTrainer,
+    ModelManager,
+    Trainer,
+)
+from flame.neighbor import AssociationState, NeighborModule, NodeRole
+from flame.initialization import InitializationModule, NodeConfig
 
 DEFAULT_DISCOVERY_PORT = 50010
 DEFAULT_HELLO_INTERVAL=5.0
+FL_HISTORY_COLUMNS = (
+    "timestamp",
+    "event",
+    "model_id",
+    "update_id",
+    "observations",
+    "source",
+    "weight_checksum",
+    "checkpoint",
+)
 
 
 def packet_type_name(value: Any) -> str:
@@ -184,7 +216,20 @@ class InteractiveNode:
         hello_interval: float,
         neighbor_csv: Optional[str],
         data_dir: Path,
+        expected_observations: int,
+        training_threshold: float,
+        aggregation_threshold: int,
     ) -> None:
+        self.config = InitializationModule(
+            NodeConfig(
+                role=role,
+                host=host,
+                port=port,
+                expected_observations=expected_observations,
+                training_threshold=training_threshold,
+                aggregation_threshold=aggregation_threshold,
+            )
+        ).initialize()
         self.role = role
         self.host = host
         self.discovery_port = discovery_port
@@ -192,18 +237,25 @@ class InteractiveNode:
         self.hello_interval = hello_interval
         self.neighbor_csv = neighbor_csv
         self.data_dir = data_dir
+        self.expected_observations = expected_observations
+        self.training_threshold = training_threshold
+        self.aggregation_threshold = aggregation_threshold
+        self.model_checkpoint_path = data_dir / "model_state.pkl"
+        self.fl_history_path = data_dir / "fl_history.csv"
         self.send_dir = data_dir / "send"
         self.received_dir = data_dir / "received"
         self.send_dir.mkdir(parents=True, exist_ok=True)
         if role == 1:
             self.received_dir.mkdir(parents=True, exist_ok=True)
         self.output = TerminalOutput()
-        self.neighbor = NeighborModule()
+        self.neighbor = NeighborModule(model_id=model_id)
         self._stop = threading.Event()
         self._worker: Optional[threading.Thread] = None
         self._monitor: Optional[threading.Thread] = None
         self._active_cluster_head: Optional[tuple[str, int]] = None
         self._next_join_id = 0
+        self.fl_module: Optional[FederatedLearningModule] = None
+        self._fl_trace_events: Queue[dict] = Queue()
 
         if role == 1:
             self.socket = SocketInterface(
@@ -212,7 +264,13 @@ class InteractiveNode:
                 timeout=0.05,
                 broadcast=True,
             )
-            self.discovery_socket = None
+            self.discovery_socket = SocketInterface(
+                host="0.0.0.0",
+                port=discovery_port,
+                timeout=0.05,
+                reuse_address=True,
+                reuse_port=True,
+            )
         else:
             self.socket = SocketInterface(host=host, port=port, timeout=0.05)
             self.discovery_socket = SocketInterface(
@@ -223,14 +281,57 @@ class InteractiveNode:
                 reuse_port=True,
             )
 
+        if role == 1:
+            try:
+                mnist_train_function = MNISTTrainer()
+                dataset_manager = DatasetManager(DatasetStorage())
+                model_manager = ModelManager(
+                    model_id,
+                    mnist_train_function.get_model_state(),
+                )
+                trainer = Trainer(
+                    dataset_manager,
+                    expected_observations=expected_observations,
+                    training_threshold=training_threshold,
+                    train_function=mnist_train_function,
+                )
+                self.fl_module = FederatedLearningModule(
+                    dataset_manager,
+                    trainer,
+                    model_manager,
+                    Aggregation(
+                        model_manager,
+                        aggregation_threshold=aggregation_threshold,
+                    ),
+                )
+            except RuntimeError as exc:
+                self.output.write(f"[FL] unavailable: {exc}")
+
         self.communication = CommunicationModule(
             self.socket,
             discovery_socket_interface=self.discovery_socket,
             role=role,
+            version=self.config.version,
+            buffer_size=self.config.buffer_size,
+            poll_interval=self.config.poll_interval,
+            initial_window_size=self.config.initial_window_size,
+            max_window_size=self.config.max_window_size,
+            ack_timeout=self.config.ack_timeout,
+            ack_delay=self.config.ack_delay,
+            reassembly_timeout=self.config.reassembly_timeout,
+            completed_retention=self.config.completed_retention,
+            max_retries=self.config.max_retries,
             neighbor_module=self.neighbor,
+            route_handler=(
+                self._handle_fl_message
+                if self.fl_module is not None
+                else None
+            ),
             event_handler=self.output.event,
-            poll_interval=0.01,
         )
+
+        if self.fl_module is not None:
+            self._save_fl_checkpoint("INITIALIZATION")
 
     @property
     def role_name(self) -> str:
@@ -246,6 +347,12 @@ class InteractiveNode:
             self.output.write(
                 f"[{self.role_name}] received folder: {self.received_dir}"
             )
+            if self.fl_module is not None:
+                self.output.write(
+                    f"[FL] WAFL-MLP ready; train after "
+                    f"{self.expected_observations * self.training_threshold:.1f}+ "
+                    "new observations"
+                )
         if self.role == 1:
             self.output.write(
                 f"[{self.role_name}] HELLO broadcast target="
@@ -366,6 +473,8 @@ class InteractiveNode:
 
     def _cluster_head_monitor(self) -> None:
         while not self._stop.is_set():
+            self._drain_fl_trace_events()
+
             for message in self.communication.pop_neighbor_messages():
                 self._handle_neighbor_message(message)
 
@@ -385,8 +494,187 @@ class InteractiveNode:
                         f"bytes={len(message.get('payload', b''))}"
                     )
 
+            for message in self.communication.pop_fl_messages():
+                self.output.write(
+                    f"[FL] MODEL_UPDATE received update_id="
+                    f"{message.get('update_id')} "
+                    f"from={endpoint_name(message.get('source_address'))}"
+                )
+
+            self._send_pending_model_updates()
+
             self.neighbor.check_expired_neighbors()
             self._stop.wait(0.05)
+
+    def _handle_fl_message(self, message: dict) -> Any:
+        """Route a complete FL message and record a concise operator trace."""
+        if self.fl_module is None:
+            return None
+
+        result = self.fl_module.handle_message(message)
+        packet_type = message.get("packet_type")
+        if packet_type == PacketType.SENSOR_DATA:
+            checkpoint = None
+            if result is not None:
+                checkpoint = self._save_fl_checkpoint(
+                    "LOCAL_TRAINING",
+                    source=message.get("source_address"),
+                )
+            self._fl_trace_events.put(
+                {
+                    "type": "observation",
+                    "source": message.get("source_address"),
+                    "count": self.fl_module.dataset_manager.get_observation_count(),
+                    "trained": result is not None,
+                    "update_id": self.fl_module.model_manager.get_update_id(),
+                    "checkpoint": checkpoint,
+                }
+            )
+        elif packet_type == PacketType.MODEL_UPDATE:
+            checkpoint = None
+            if result is not None:
+                checkpoint = self._save_fl_checkpoint(
+                    "AGGREGATION",
+                    source=message.get("source_address"),
+                )
+            self._fl_trace_events.put(
+                {
+                    "type": "aggregation",
+                    "source": message.get("source_address"),
+                    "aggregated": result is not None,
+                    "update_id": self.fl_module.model_manager.get_update_id(),
+                    "checkpoint": checkpoint,
+                }
+            )
+        return result
+
+    @staticmethod
+    def _model_state_checksum(model_state: Any) -> str:
+        serialized = pickle.dumps(model_state, protocol=pickle.HIGHEST_PROTOCOL)
+        return hashlib.sha256(serialized).hexdigest()[:16]
+
+    def _append_fl_history(
+        self,
+        *,
+        timestamp: str,
+        event: str,
+        update_id: int,
+        observations: int,
+        source: Optional[str],
+        weight_checksum: str,
+    ) -> None:
+        try:
+            file_exists = self.fl_history_path.exists()
+            with self.fl_history_path.open("a", newline="", encoding="utf-8") as csv_file:
+                writer = csv.DictWriter(csv_file, fieldnames=FL_HISTORY_COLUMNS)
+                if not file_exists or self.fl_history_path.stat().st_size == 0:
+                    writer.writeheader()
+                writer.writerow(
+                    {
+                        "timestamp": timestamp,
+                        "event": event,
+                        "model_id": self.fl_module.model_manager.get_model_id(),
+                        "update_id": update_id,
+                        "observations": observations,
+                        "source": source or "-",
+                        "weight_checksum": weight_checksum,
+                        "checkpoint": str(self.model_checkpoint_path),
+                    }
+                )
+        except OSError as exc:
+            self.output.write(f"[FL] history log failed: {exc}")
+
+    def _save_fl_checkpoint(self, event: str, source: Any = None) -> Optional[dict]:
+        """Save the latest Cluster Head model for simulation inspection."""
+        if self.role != 1 or self.fl_module is None:
+            return None
+
+        model_manager = self.fl_module.model_manager
+        model_state = model_manager.get_model_state()
+        if model_state is None:
+            return None
+
+        timestamp = datetime.now(timezone.utc).isoformat()
+        weight_checksum = self._model_state_checksum(model_state)
+        checkpoint = {
+            "format": "FLAME simulation model checkpoint",
+            "format_version": 1,
+            "timestamp": timestamp,
+            "event": event,
+            "source": endpoint_name(source),
+            "model_id": model_manager.get_model_id(),
+            "update_id": model_manager.get_update_id(),
+            "observations": self.fl_module.dataset_manager.get_observation_count(),
+            "weight_checksum": weight_checksum,
+            "model_state": model_state,
+        }
+
+        try:
+            with self.model_checkpoint_path.open("wb") as checkpoint_file:
+                pickle.dump(
+                    checkpoint,
+                    checkpoint_file,
+                    protocol=pickle.HIGHEST_PROTOCOL,
+                )
+        except (OSError, pickle.PicklingError, TypeError) as exc:
+            self.output.write(f"[FL] model checkpoint failed: {exc}")
+            return None
+
+        self._append_fl_history(
+            timestamp=timestamp,
+            event=event,
+            update_id=model_manager.get_update_id(),
+            observations=checkpoint["observations"],
+            source=checkpoint["source"],
+            weight_checksum=weight_checksum,
+        )
+        self.output.write(
+            f"[FL] model weights saved to {self.model_checkpoint_path} "
+            f"event={event} update_id={model_manager.get_update_id()} "
+            f"checksum={weight_checksum}"
+        )
+        return {
+            "path": str(self.model_checkpoint_path),
+            "event": event,
+            "update_id": model_manager.get_update_id(),
+            "weight_checksum": weight_checksum,
+        }
+
+    def _drain_fl_trace_events(self) -> None:
+        while True:
+            try:
+                event = self._fl_trace_events.get_nowait()
+            except Empty:
+                return
+
+            source = endpoint_name(event.get("source"))
+            if event["type"] == "observation":
+                self.output.write(
+                    f"[FL] observation accepted count={event['count']}/"
+                    f"{self.expected_observations} from={source}"
+                )
+                if event["trained"]:
+                    self.output.write(
+                        f"[FL] local training complete model_update_id="
+                        f"{event['update_id']}"
+                    )
+                    checkpoint = event.get("checkpoint")
+                    if checkpoint is not None:
+                        self.output.write(
+                            f"[FL] local weights checksum="
+                            f"{checkpoint['weight_checksum']}"
+                        )
+            elif event["type"] == "aggregation" and event["aggregated"]:
+                self.output.write(
+                    f"[FL] aggregation complete model_update_id="
+                    f"{event['update_id']} from={source}"
+                )
+                checkpoint = event.get("checkpoint")
+                if checkpoint is not None:
+                    self.output.write(
+                        f"[FL] aggregated weights checksum="
+                        f"{checkpoint['weight_checksum']}"
+                    )
 
     def _store_received_file(self, message: dict) -> None:
         if self.role != 1:
@@ -401,6 +689,141 @@ class InteractiveNode:
             self.output.write(f"[FILE] saved {output_path}")
         except OSError as exc:
             self.output.write(f"[ERROR] could not save {output_path}: {exc}")
+
+    def _send_pending_model_updates(self) -> None:
+        if self.role != 1 or self.fl_module is None:
+            return
+
+        compatible_neighbors = [
+            neighbor
+            for neighbor in self.neighbor.get_neighbors()
+            if (
+                neighbor.node_role == NodeRole.CLUSTER_HEAD
+                and neighbor.port != self.socket.address[1]
+                and neighbor.association_state != AssociationState.INACTIVE
+                and neighbor.model_id == self.model_id
+            )
+        ]
+        if not compatible_neighbors:
+            return
+
+        for update in self.fl_module.pop_outbound_updates():
+            excluded_source = update.get("_exclude_source")
+            for neighbor in compatible_neighbors:
+                destination = (neighbor.ip_address, neighbor.port)
+                if excluded_source == destination:
+                    continue
+                try:
+                    self.communication.send_message(
+                        update,
+                        destination=destination,
+                    )
+                    self.output.write(
+                        f"[FL] MODEL_UPDATE update_id={update.get('update_id')} "
+                        f"to={endpoint_name(destination)}"
+                    )
+                except (OSError, TypeError, ValueError) as exc:
+                    self.output.write(
+                        f"[FL] MODEL_UPDATE send failed to "
+                        f"{endpoint_name(destination)}: {exc}"
+                    )
+
+    def _send_mnist_image(self, path: Path, label: Optional[int] = None) -> None:
+        if self.role != 0:
+            self.output.write("[COMMAND] Only Sensor Nodes can send MNIST observations.")
+            return
+        if not self._is_associated() or self._active_cluster_head is None:
+            self.output.write("[COMMAND] Sensor is not ASSOCIATED with a Cluster Head yet.")
+            return
+        path = self._resolve_image_path(path)
+        if label is None:
+            label = 0
+            self.output.write(
+                "[COMMAND] Image filename is ignored; using MNIST label=0. "
+                "Pass a label for labeled training."
+            )
+        if not 0 <= label <= 9:
+            self.output.write("[COMMAND] MNIST label must be between 0 and 9.")
+            return
+
+        try:
+            with Image.open(path) as image:
+                pixels = image.convert("L").resize((28, 28)).tobytes()
+        except (OSError, ValueError) as exc:
+            self.output.write(f"[COMMAND] Could not read MNIST image: {exc}")
+            return
+
+        try:
+            raw = self.communication.send_message(
+                {
+                    "packet_type": PacketType.SENSOR_DATA,
+                    "role": 0,
+                    "sensor_type": 1,
+                    "payload": pixels + bytes([label]),
+                },
+                destination=self._active_cluster_head,
+            )
+        except (OSError, TypeError, ValueError) as exc:
+            self.output.write(f"[COMMAND] MNIST observation was not sent: {exc}")
+            return
+
+        data_id = parse_datagram(raw).payload["data_id"]
+
+        self.output.write(
+            f"[COMMAND] queued MNIST observation data_id={data_id} "
+            f"label={label} to={endpoint_name(self._active_cluster_head)}"
+        )
+
+    def _send_mnist_folder(
+        self,
+        folder: Path,
+        label: Optional[int] = None,
+    ) -> None:
+        """Send every image in a folder as an MNIST observation.
+
+        Image filenames are not protocol identifiers or labels.  A folder
+        batch uses one explicit label for all images; the default is zero so
+        arbitrary filenames remain valid inputs for the simulation.
+        """
+        if self.role != 0:
+            self.output.write("[COMMAND] Only Sensor Nodes can send MNIST observations.")
+            return
+        if not self._is_associated() or self._active_cluster_head is None:
+            self.output.write("[COMMAND] Sensor is not ASSOCIATED with a Cluster Head yet.")
+            return
+
+        folder = self._resolve_image_path(folder)
+        if not folder.is_dir():
+            self.output.write(f"[COMMAND] Image folder not found: {folder}")
+            return
+
+        paths = sorted(
+            path
+            for path in folder.iterdir()
+            if path.is_file() and path.suffix.lower() in {".png", ".jpg", ".jpeg"}
+        )
+        if not paths:
+            self.output.write(f"[COMMAND] No PNG/JPEG images found in: {folder}")
+            return
+
+        if label is None:
+            label = 0
+            self.output.write(
+                "[COMMAND] Image filenames are ignored; using MNIST label=0. "
+                "Pass a batch label for labeled training."
+            )
+        if not 0 <= label <= 9:
+            self.output.write("[COMMAND] MNIST label must be between 0 and 9.")
+            return
+
+        for path in paths:
+            self._send_mnist_image(path, label)
+
+        self.output.write(
+            f"[COMMAND] queued {len(paths)} MNIST observation(s) from folder={folder} "
+            f"label={label}; "
+            "FLAME assigned the data_id values."
+        )
 
     def _handle_neighbor_message(self, message: dict) -> None:
         packet_type = message.get("packet_type")
@@ -501,7 +924,7 @@ class InteractiveNode:
         if path.is_absolute():
             return path
         send_path = self.send_dir / path
-        if send_path.is_file():
+        if send_path.exists():
             return send_path
         return path
 
@@ -577,6 +1000,17 @@ class InteractiveNode:
             f"active_cluster_head={endpoint_name(self._active_cluster_head)} "
             f"associated={self._is_associated()}"
         )
+        if self.role == 1 and self.fl_module is not None:
+            self.output.write(
+                f"[FL] observations="
+                f"{self.fl_module.dataset_manager.get_observation_count()}/"
+                f"{self.expected_observations} "
+                f"model_update_id={self.fl_module.model_manager.get_update_id()}"
+            )
+            self.output.write(
+                f"[FL] checkpoint={self.model_checkpoint_path} "
+                f"history={self.fl_history_path}"
+            )
         self._print_neighbors()
 
     def _export_neighbors(self, path_text: Optional[str]) -> None:
@@ -592,7 +1026,8 @@ class InteractiveNode:
     def command_loop(self) -> None:
         self.output.write(
             "Commands: help, status, neighbors, send <image>, "
-            "send-batch <image> [image...], export [csv_path], quit"
+            "send-batch <folder> [label], send-mnist <image> [label], "
+            "export [csv_path], quit"
         )
         while not self._stop.is_set():
             self.output.begin_input()
@@ -617,7 +1052,10 @@ class InteractiveNode:
             if command == "help":
                 self.output.write(
                     "send <path> sends one PNG/JPEG; "
-                    "send-batch <path> ... sends multiple files; "
+                    "send-batch <folder> [label] sends all PNG/JPEG files "
+                    "as MNIST observations; filenames are ignored; "
+            "send-mnist <path> [label] sends one 785-byte labeled "
+            "MNIST observation; filenames are ignored; "
                     "FLAME assigns data_id values; export [path] writes the "
                     "existing neighbor table."
                 )
@@ -632,11 +1070,35 @@ class InteractiveNode:
                     self.output.write("Usage: send <image_path>")
                     continue
                 self._send_images([Path(parts[1])])
-            elif command == "send-batch":
-                if len(parts) < 2:
-                    self.output.write("Usage: send-batch <image_path> [image_path...]")
+            elif command in {"send-batch", "images", "/images"}:
+                if len(parts) not in {2, 3}:
+                    self.output.write(
+                        "Usage: send-batch <image_folder> [label] "
+                        "(or /images <image_folder> [label])"
+                    )
                     continue
-                self._send_images([Path(path) for path in parts[1:]])
+                batch_label = None
+                if len(parts) == 3:
+                    try:
+                        batch_label = int(parts[2])
+                    except ValueError:
+                        self.output.write(
+                            "Usage: send-batch <image_folder> [label]"
+                        )
+                        continue
+                self._send_mnist_folder(Path(parts[1]), batch_label)
+            elif command == "send-mnist":
+                if len(parts) not in {2, 3}:
+                    self.output.write("Usage: send-mnist <image_path> [label]")
+                    continue
+                label = None
+                if len(parts) == 3:
+                    try:
+                        label = int(parts[2])
+                    except ValueError:
+                        self.output.write("Usage: send-mnist <image_path> [label]")
+                        continue
+                self._send_mnist_image(Path(parts[1]), label)
             elif command == "hello" and self.role == 1:
                 try:
                     self._send_hello()
@@ -678,6 +1140,9 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--discovery-port", type=int, default=DEFAULT_DISCOVERY_PORT)
     parser.add_argument("--model-id", type=int, default=1)
     parser.add_argument("--hello-interval", type=float, default=DEFAULT_HELLO_INTERVAL)
+    parser.add_argument("--expected-observations", type=int, default=10)
+    parser.add_argument("--training-threshold", type=float, default=0.80)
+    parser.add_argument("--aggregation-threshold", type=int, default=1)
     parser.add_argument("--neighbor-csv", help="Cluster Head shutdown CSV path")
     parser.add_argument(
         "--data-dir",
@@ -720,6 +1185,9 @@ def main() -> None:
         hello_interval=args.hello_interval,
         neighbor_csv=args.neighbor_csv,
         data_dir=data_dir,
+        expected_observations=args.expected_observations,
+        training_threshold=args.training_threshold,
+        aggregation_threshold=args.aggregation_threshold,
     )
     node.start()
     try:
