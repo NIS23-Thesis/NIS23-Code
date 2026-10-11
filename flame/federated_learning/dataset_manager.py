@@ -46,11 +46,21 @@ class DatasetManager:
         if not isinstance(payload, bytes):
             raise TypeError("SENSOR_DATA payload must be bytes.")
 
+        source_address = message.get("source_address")
+        for existing in self.storage.get_all():
+            if (
+                existing.source_address == source_address
+                and existing.data_id == message["data_id"]
+                and existing.sequence_number == message["sequence_number"]
+            ):
+                return existing
+
         entry = DatasetEntry(
             data_id=message["data_id"],
             sensor_type=message["sensor_type"],
             sequence_number=message["sequence_number"],
             payload=payload,
+            source_address=source_address,
         )
 
         self.storage.add(entry)

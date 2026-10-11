@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 
 @dataclass
@@ -8,6 +8,7 @@ class DatasetEntry:
     sensor_type: int
     sequence_number: int
     payload: bytes
+    source_address: Optional[Tuple[str, int]] = None
 
 
 class DatasetStorage:

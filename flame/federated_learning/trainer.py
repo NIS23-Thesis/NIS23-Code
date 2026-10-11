@@ -1,4 +1,4 @@
-from typing import Callable, List, Optional, Set
+from typing import Callable, List, Optional, Set, Tuple
 
 from .dataset_manager import DatasetManager
 from .dataset_storage import DatasetEntry
@@ -35,7 +35,7 @@ class Trainer:
         self.train_function = train_function
 
         # Stores data IDs that have already been used for training.
-        self._used_data_ids: Set[int] = set()
+        self._used_observations: Set[Tuple[object, int, int]] = set()
 
         # Stores the most recently produced local model.
         self._local_model = None
@@ -48,8 +48,16 @@ class Trainer:
         return [
             observation
             for observation in observations
-            if observation.data_id not in self._used_data_ids
+            if self._observation_key(observation) not in self._used_observations
         ]
+
+    @staticmethod
+    def _observation_key(observation: DatasetEntry) -> Tuple[object, int, int]:
+        return (
+            observation.source_address,
+            observation.data_id,
+            observation.sequence_number,
+        )
 
     def should_train(self) -> bool:
         """
@@ -57,7 +65,7 @@ class Trainer:
         observations has been received.
         """
 
-        received_count = self.dataset_manager.get_observation_count()
+        received_count = len(self.get_new_observations())
 
         received_ratio = (
             received_count / self.expected_observations
@@ -89,7 +97,7 @@ class Trainer:
         model = self.train_function(new_observations)
 
         for observation in new_observations:
-            self._used_data_ids.add(observation.data_id)
+            self._used_observations.add(self._observation_key(observation))
 
         self._local_model = model
 
@@ -100,7 +108,15 @@ class Trainer:
 
         return self._local_model
 
+    def set_local_model(self, model):
+        """Synchronize an externally aggregated model with the trainer."""
+
+        self._local_model = model
+        setter = getattr(self.train_function, "set_local_model", None)
+        if callable(setter):
+            setter(model)
+
     def get_used_data_ids(self) -> Set[int]:
         """Return the IDs of observations already used for training."""
 
-        return set(self._used_data_ids)
+        return {data_id for _source, data_id, _sequence in self._used_observations}

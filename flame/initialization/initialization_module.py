@@ -70,3 +70,18 @@ class InitializationModule:
 
         if self.config.max_retries < 0:
             raise ValueError("Maximum retries cannot be negative.")
+
+        if type(self.config.expected_observations) is not int or (
+            self.config.expected_observations <= 0
+        ):
+            raise ValueError("Expected observations must be greater than zero.")
+
+        if not isinstance(self.config.training_threshold, (int, float)) or not (
+            0 < self.config.training_threshold <= 1
+        ):
+            raise ValueError("Training threshold must be between zero and one.")
+
+        if type(self.config.aggregation_threshold) is not int or (
+            self.config.aggregation_threshold <= 0
+        ):
+            raise ValueError("Aggregation threshold must be greater than zero.")

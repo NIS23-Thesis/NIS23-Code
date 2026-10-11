@@ -41,8 +41,19 @@ class NeighborModule:
         "Model ID",
     )
 
-    def __init__(self):
+    def __init__(self, model_id: Optional[int] = None):
+        if model_id is not None and (
+            type(model_id) is not int or not 0 <= model_id <= 0xFF
+        ):
+            raise ValueError("Model ID must fit within 8 bits.")
+
+        self.model_id = model_id
         self.neighbor_table: Dict[tuple[str, int], Neighbor] = {}
+
+    def is_model_compatible(self, model_id: Optional[int]) -> bool:
+        """Return whether a peer belongs to this node's model context."""
+
+        return self.model_id is None or model_id == self.model_id
 
     def add_neighbor(
         self,
@@ -119,6 +130,7 @@ class NeighborModule:
         """
         if current_time is None:
             current_time = time.time()
+
         self.check_expired_neighbors(current_time=current_time)
 
         output_path = Path(path)
@@ -149,13 +161,19 @@ class NeighborModule:
         model_id: Optional[int] = None,
         current_time: Optional[float] = None,
         neighbor_timeout: float = 30.0,
-    ) -> None:
+    ) -> bool:
         """
         Process a HELLO message and create or update a neighbor entry.
         """
 
         if current_time is None:
             current_time = time.time()
+
+        if node_role == NodeRole.CLUSTER_HEAD and not self.is_model_compatible(model_id):
+            existing_neighbor = self.get_neighbor(ip_address, port)
+            if existing_neighbor is not None:
+                existing_neighbor.association_state = AssociationState.INACTIVE
+            return False
 
         expiration_time = current_time + neighbor_timeout
 
@@ -181,6 +199,8 @@ class NeighborModule:
             if existing_neighbor.association_state == AssociationState.INACTIVE:
                 existing_neighbor.association_state = AssociationState.DISCOVERED
 
+        return True
+
     def process_join(
         self,
         ip_address: str,
@@ -189,7 +209,7 @@ class NeighborModule:
         model_id: Optional[int] = None,
         current_time: Optional[float] = None,
         neighbor_timeout: float = 30.0,
-    ) -> None:
+    ) -> bool:
         """
         Process a JOIN message from a Sensor Node.
 
@@ -201,6 +221,9 @@ class NeighborModule:
 
         if current_time is None:
             current_time = time.time()
+
+        if not self.is_model_compatible(model_id):
+            return False
 
         expiration_time = current_time + neighbor_timeout
 
@@ -236,6 +259,8 @@ class NeighborModule:
             existing_neighbor.model_id = model_id
             existing_neighbor.join_id = join_id
 
+        return True
+
     def start_join(
         self,
         ip_address: str,
@@ -244,7 +269,7 @@ class NeighborModule:
         model_id: Optional[int] = None,
         current_time: Optional[float] = None,
         neighbor_timeout: float = 30.0,
-    ) -> None:
+    ) -> bool:
         """
         Record a JOIN request sent by this Sensor Node.
 
@@ -256,6 +281,9 @@ class NeighborModule:
 
         if current_time is None:
             current_time = time.time()
+
+        if not self.is_model_compatible(model_id):
+            return False
 
         expiration_time = current_time + neighbor_timeout
 
@@ -283,6 +311,8 @@ class NeighborModule:
             existing_neighbor.expiration_time = expiration_time
             existing_neighbor.model_id = model_id
             existing_neighbor.join_id = join_id
+
+        return True
 
     def process_join_accept(
         self,

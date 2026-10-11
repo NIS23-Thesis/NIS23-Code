@@ -1,9 +1,37 @@
 """Local model state and outbound model-update buffering for FLAME."""
 
 from collections import deque
+import pickle
 from typing import Any, Deque, Dict, List, Optional
 
 from ..communication.message import PacketType
+
+
+_MODEL_STATE_MAGIC = b"FLMS"
+_MODEL_STATE_VERSION = 1
+
+
+def serialize_model_state(model_state: Any) -> bytes:
+    """Serialize one complete local model state for a MODEL_UPDATE payload."""
+    return _MODEL_STATE_MAGIC + bytes([_MODEL_STATE_VERSION]) + pickle.dumps(
+        model_state,
+        protocol=pickle.HIGHEST_PROTOCOL,
+    )
+
+
+def deserialize_model_state(payload: bytes) -> Any:
+    """Deserialize a model state produced by :func:`serialize_model_state`."""
+    if not isinstance(payload, (bytes, bytearray)):
+        raise TypeError("Serialized model state must be bytes-like.")
+    raw_payload = bytes(payload)
+    header_length = len(_MODEL_STATE_MAGIC) + 1
+    if len(raw_payload) <= header_length:
+        raise ValueError("Serialized model state is too short.")
+    if raw_payload[:len(_MODEL_STATE_MAGIC)] != _MODEL_STATE_MAGIC:
+        raise ValueError("Payload is not a FLAME model state.")
+    if raw_payload[len(_MODEL_STATE_MAGIC)] != _MODEL_STATE_VERSION:
+        raise ValueError("Unsupported FLAME model state version.")
+    return pickle.loads(raw_payload[header_length:])
 
 
 class ModelManager:
@@ -79,11 +107,15 @@ class ModelManager:
             "role": 1,
             "update_id": self._update_id,
             "model_id": self._model_id,
-            "payload": self._model_state,
+            "payload": serialize_model_state(self._model_state),
         }
         if sequence_number is not None:
             message["sequence_number"] = sequence_number
 
+        # Retain only the latest eligible state while a peer is unavailable.
+        # This follows the thesis' opportunistic exchange behavior and avoids
+        # sending stale intermediate models after connectivity returns.
+        self._outbound_update_buffer.clear()
         self._outbound_update_buffer.append(message)
         return message
 

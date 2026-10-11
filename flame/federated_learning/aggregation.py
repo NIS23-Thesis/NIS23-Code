@@ -2,25 +2,27 @@
 
 from collections import deque
 from collections.abc import Mapping, Sequence
+import math
 from numbers import Number
+import pickle
 from typing import Any, Deque, Dict, Optional, Set, Tuple
 
 from ..communication.message import PacketType
-from .model_manager import ModelManager
+from .model_manager import ModelManager, deserialize_model_state
 
 
 class Aggregation:
     """Buffer and aggregate compatible MODEL_UPDATE message objects.
 
-    Aggregation follows the thesis equations:
+    Aggregation follows the FLAME thesis' WAFL rule:
 
     * delta_j = M_j - M_local
-    * delta_avg = sum(w_j * delta_j) / sum(w_j)
+    * delta_avg = sum(update_id_j * delta_j) / sum(update_id_j)
     * M_new = M_local + eta * delta_avg
 
-    The sender's update_id is used as w_j.  Model state arithmetic is kept
-    generic so the caller can provide scalar, sequence, mapping, or model
-    objects that implement the corresponding arithmetic operators.
+    Model state arithmetic is kept generic so the caller can provide scalar,
+    sequence, mapping, or model objects that implement the corresponding
+    arithmetic operators.
     """
 
     def __init__(
@@ -33,10 +35,10 @@ class Aggregation:
             raise TypeError("model_manager must be a ModelManager.")
         if type(aggregation_threshold) is not int or aggregation_threshold <= 0:
             raise ValueError("Aggregation threshold must be greater than 0.")
-        if not isinstance(aggregation_learning_rate, Number) or (
-            aggregation_learning_rate < 0
+        if not isinstance(aggregation_learning_rate, Number) or not (
+            0 <= aggregation_learning_rate <= 1
         ):
-            raise ValueError("Aggregation learning rate must be non-negative.")
+            raise ValueError("WAFL aggregation coefficient must be between 0 and 1.")
 
         self.model_manager = model_manager
         self.aggregation_threshold = aggregation_threshold
@@ -75,7 +77,7 @@ class Aggregation:
         return self.aggregate()
 
     def aggregate(self) -> Optional[Any]:
-        """Apply the thesis aggregation equations to the buffered updates."""
+        """Apply the WAFL aggregation rule to the buffered updates."""
 
         if not self._buffer:
             return None
@@ -86,29 +88,30 @@ class Aggregation:
 
         weighted_difference = None
         total_weight = 0
-
         for model_update in self._buffer:
-            update_id = _get_field(model_update, "update_id")
-            weight = update_id
-            if weight <= 0:
-                raise ValueError("MODEL_UPDATE update_id must be greater than 0.")
-
-            received_model = _get_field(model_update, "payload")
+            received_model = _model_state_from_update(model_update)
             difference = _subtract(received_model, local_model)
+            update_weight = _get_field(model_update, "update_id")
             weighted_difference = _add(
                 weighted_difference,
-                _scale(difference, weight),
+                _scale(difference, update_weight),
             )
-            total_weight += weight
+            total_weight += update_weight
 
-        average_difference = _scale(
-            weighted_difference,
-            1 / total_weight,
-        )
+        if total_weight == 0:
+            # A zero-progress update is valid but has no influence by itself.
+            # Keep it buffered until a positive-weight update is available.
+            return None
+
+        average_difference = _scale(weighted_difference, 1 / total_weight)
         new_model = _add(
             local_model,
             _scale(average_difference, self.aggregation_learning_rate),
         )
+
+        if _states_equal(new_model, local_model):
+            self._buffer.clear()
+            return None
 
         self.model_manager.update_from_aggregation(new_model)
         self._buffer.clear()
@@ -130,9 +133,20 @@ class Aggregation:
             return False
         if type(update_id) is not int or not 0 <= update_id <= 0xFF:
             return False
-        if _get_field(model_update, "payload") is None:
+        try:
+            _model_state_from_update(model_update)
+        except (TypeError, ValueError, EOFError, pickle.UnpicklingError):
             return False
         return True
+
+
+def _model_state_from_update(model_update: Any) -> Any:
+    payload = _get_field(model_update, "payload")
+    if payload is None:
+        raise ValueError("MODEL_UPDATE payload is required.")
+    if isinstance(payload, (bytes, bytearray)):
+        return deserialize_model_state(payload)
+    return payload
 
 
 def _get_field(value: Any, field: str, default: Any = None) -> Any:
@@ -189,3 +203,49 @@ def _scale(value: Any, factor: Number) -> Any:
         return value * factor
     except TypeError as error:
         raise TypeError("Model state does not support scalar multiplication.") from error
+
+
+def _states_equal(left: Any, right: Any) -> bool:
+    if isinstance(left, Mapping) and isinstance(right, Mapping):
+        return set(left) == set(right) and all(
+            _states_equal(left[key], right[key]) for key in left
+        )
+    if _is_sequence(left) and _is_sequence(right):
+        return len(left) == len(right) and all(
+            _states_equal(a, b) for a, b in zip(left, right)
+        )
+
+    # Tensor/array arithmetic can leave a tiny round-off residue after
+    # applying a complete model update (for example, M + (N - M)). Treat
+    # numerically equivalent states as unchanged so opportunistic exchange
+    # does not create an endless update loop.
+    if hasattr(left, "shape") and hasattr(right, "shape"):
+        try:
+            difference = left - right
+            magnitude = difference.abs() if hasattr(difference, "abs") else abs(difference)
+            maximum = magnitude.max() if hasattr(magnitude, "max") else magnitude
+            maximum = maximum.item() if hasattr(maximum, "item") else maximum
+            left_max = left.abs().max() if hasattr(left, "abs") else abs(left).max()
+            right_max = right.abs().max() if hasattr(right, "abs") else abs(right).max()
+            left_max = left_max.item() if hasattr(left_max, "item") else left_max
+            right_max = right_max.item() if hasattr(right_max, "item") else right_max
+            scale = max(float(left_max), float(right_max))
+            return float(maximum) <= 1e-6 + (1e-5 * scale)
+        except (TypeError, ValueError, RuntimeError, AttributeError):
+            pass
+
+    if isinstance(left, Number) and isinstance(right, Number):
+        return math.isclose(float(left), float(right), rel_tol=1e-9, abs_tol=1e-12)
+
+    try:
+        comparison = left == right
+        if isinstance(comparison, bool):
+            return comparison
+        if hasattr(comparison, "all"):
+            result = comparison.all()
+            return bool(result.item() if hasattr(result, "item") else result)
+        if hasattr(comparison, "item"):
+            return bool(comparison.item())
+    except (TypeError, ValueError, RuntimeError):
+        return False
+    return False

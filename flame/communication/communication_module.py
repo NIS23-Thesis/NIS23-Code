@@ -283,6 +283,9 @@ class CommunicationModule:
             raise ValueError("Sequence number must fit within 16 bits.")
         packet["sequence_number"] = sequence_number
 
+        if packet_type == PacketType.SENSOR_DATA and "data_id" not in packet:
+            packet["data_id"] = self._allocate_data_id()
+
         if packet_type in (PacketType.SENSOR_DATA, PacketType.MODEL_UPDATE):
             return self._send_reliable_message(packet, destination)
 
@@ -519,9 +522,9 @@ class CommunicationModule:
         self,
         packet: dict,
         source_address: Address,
-    ) -> None:
+    ) -> bool:
         if self.neighbor_module is None:
-            return
+            return True
 
         packet_type = packet["packet_type"]
 
@@ -532,7 +535,7 @@ class CommunicationModule:
                 else NodeRole.CLUSTER_HEAD
             )
 
-            self.neighbor_module.process_hello(
+            return self.neighbor_module.process_hello(
                 ip_address=source_address[0],
                 port=source_address[1],
                 node_role=node_role,
@@ -540,7 +543,7 @@ class CommunicationModule:
             )
 
         elif packet_type == PacketType.JOIN:
-            self.neighbor_module.process_join(
+            accepted = self.neighbor_module.process_join(
                 ip_address=source_address[0],
                 port=source_address[1],
                 join_id=packet["join_id"],
@@ -553,13 +556,14 @@ class CommunicationModule:
                     "role": 1,
                     "join_id": packet["join_id"],
                     "timeout": 30,
-                    "rejected": 0,
+                    "rejected": 0 if accepted else 1,
                 },
                 destination=source_address,
             )
+            return accepted
 
         elif packet_type == PacketType.JOIN_ACCEPT:
-            self.neighbor_module.process_join_accept(
+            return self.neighbor_module.process_join_accept(
                 ip_address=source_address[0],
                 port=source_address[1],
                 join_id=packet["join_id"],
@@ -571,6 +575,9 @@ class CommunicationModule:
                 ip_address=source_address[0],
                 port=source_address[1],
             )
+            return True
+
+        return True
 
 
     def _handle_parsed_packet(
@@ -607,10 +614,13 @@ class CommunicationModule:
             if source_address is not None:
                 packet["source_address"] = source_address
 
-            self._consume_reliable_fragment(
+            complete_message = self._consume_reliable_fragment(
                 packet,
                 source_address,
             )
+
+            if complete_message is None:
+                return
 
             if packet_type == PacketType.SENSOR_DATA:
                 if source_address is not None and self.neighbor_module is not None:
@@ -634,14 +644,20 @@ class CommunicationModule:
                 PacketType.JOIN_ACCEPT,
                 PacketType.LEAVE,
             ):
-                self._process_neighbor_packet(
+                accepted = self._process_neighbor_packet(
                     packet,
                     source_address,
                 )
+                if packet_type == PacketType.HELLO and not accepted:
+                    return
 
         self._deliver(packet)
 
-    def _consume_reliable_fragment(self, packet: dict, source_address: Address) -> None:
+    def _consume_reliable_fragment(
+        self,
+        packet: dict,
+        source_address: Address,
+    ) -> Optional[dict]:
         # Store a received fragment and handle reassembly, acknowledgements, and delivery.
         with self._state_lock:
             result = self.reliability_manager.receive_fragment(source_address, packet)
@@ -660,7 +676,7 @@ class CommunicationModule:
             self._send_ack(result.key, ack)
 
         if result.complete_fragments is None:
-            return
+            return None
 
         complete = dict(result.complete_fragments[0])
         complete["payload"] = reassemble_fragments(result.complete_fragments)
@@ -693,6 +709,7 @@ class CommunicationModule:
             source=source_address,
         )
         self._deliver(complete)
+        return complete
 
     # Build and send an acknowledgement packet.
     def _send_ack(self, key: TransferKey, ack: AckInfo) -> None:
