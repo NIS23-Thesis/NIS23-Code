@@ -65,7 +65,9 @@ class Trainer:
         observations has been received.
         """
 
-        received_count = len(self.get_new_observations())
+        received_count = len(
+            self.dataset_manager.get_observations()
+        )
 
         received_ratio = (
             received_count / self.expected_observations
