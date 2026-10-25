@@ -102,6 +102,7 @@ class CommunicationModule:
         role: Optional[int] = None,
         version: int = 1,
         buffer_size: int = 128,
+        send_buffer_capacity: int = 128,
         poll_interval: float = 0.01,
         auto_start: bool = True,
         poll_socket: bool = True,
@@ -121,6 +122,12 @@ class CommunicationModule:
             raise ValueError("Role must be 0, 1, or None.")
         if not 0 <= version <= 0x0F:
             raise ValueError("Version must fit within 4 bits.")
+        if (
+            not isinstance(send_buffer_capacity, int)
+            or isinstance(send_buffer_capacity, bool)
+            or send_buffer_capacity <= 0
+        ):
+            raise ValueError("send_buffer_capacity must be a positive integer.")
 
         self.socket_interface = socket_interface
         self.discovery_socket_interface = discovery_socket_interface
@@ -129,6 +136,9 @@ class CommunicationModule:
         self.poll_interval = poll_interval
         self.poll_socket = poll_socket
         self.datagram_buffer = DatagramBuffer(max_size=buffer_size)
+        self._send_buffer: Deque[Tuple[dict, Address]] = deque()
+        self._send_buffer_lock = threading.Lock()
+        self._send_buffer_capacity = send_buffer_capacity
         self.receive_buffer = ReceiveBuffer()
         self.neighbor_buffer = ReceiveBuffer()
         self.sensor_buffer = ReceiveBuffer()
@@ -248,6 +258,79 @@ class CommunicationModule:
         ):
             raise ValueError("Destination must be a (host, port) tuple.")
         return destination
+
+    @property
+    def send_buffer_size(self) -> int:
+        """Return the number of messages waiting to be transmitted."""
+        with self._send_buffer_lock:
+            return len(self._send_buffer)
+
+
+    @property
+    def send_buffer_available(self) -> bool:
+        """Return whether the outgoing buffer has room for another message."""
+        with self._send_buffer_lock:
+            return len(self._send_buffer) < self._send_buffer_capacity
+
+
+    def try_enqueue_message(
+        self,
+        message_obj: Any,
+        destination: Optional[Address] = None,
+    ) -> bool:
+        """Queue a message for transmission without blocking.
+
+        Returns True when queued, or False when the buffer is full.
+        Existing send_message() calls remain immediate.
+        """
+        packet = self._as_dict(message_obj)
+
+        if "packet_type" not in packet:
+            raise ValueError("Message requires a packet_type.")
+
+        if destination is None:
+            destination = self._resolve_destination(packet)
+
+        if destination is None:
+            raise ValueError(
+                "Destination address is required for try_enqueue_message()."
+            )
+
+        destination = self._validate_destination(destination)
+
+        with self._send_buffer_lock:
+            if len(self._send_buffer) >= self._send_buffer_capacity:
+                return False
+
+            self._send_buffer.append((packet, destination))
+
+        self._emit(
+            "message_queued",
+            packet_type=self._packet_type(packet["packet_type"]),
+            destination=destination,
+            send_buffer_size=self.send_buffer_size,
+        )
+        return True
+
+
+    def _service_send_buffer(self) -> bool:
+        """Submit one queued message through the existing send pipeline."""
+        with self._send_buffer_lock:
+            if not self._send_buffer:
+                return False
+
+            message, destination = self._send_buffer.popleft()
+
+        try:
+            self.send_message(message, destination=destination)
+        except Exception as exc:
+            self._record_error(
+                f"Failed to send queued message: {exc}",
+                b"",
+                destination,
+            )
+
+        return True
 
     def send_message(
         self,
@@ -481,19 +564,27 @@ class CommunicationModule:
         return True
 
     def _drain_loop(self) -> None:
-        # Process incoming data and reliability tasks until stopped.
+        # Process outgoing messages, incoming data, and reliability tasks.
         while not self._stop_event.is_set():
             did_work = False
+
             try:
+                did_work = self._service_send_buffer() or did_work
+
                 if self.poll_socket:
                     did_work = self.ingest_socket_once() or did_work
+
                 did_work = self._drain_once() or did_work
                 did_work = self._service_reliability() or did_work
+
             except OSError as exc:
                 if not self._stop_event.is_set():
                     self._record_error(str(exc), b"")
             except Exception as exc:
-                self._record_error(f"communication loop error: {exc}", b"")
+                self._record_error(
+                    f"communication loop error: {exc}",
+                    b"",
+                )
 
             if not did_work:
                 time.sleep(self.poll_interval)
