@@ -38,13 +38,21 @@ class SocketInterface:
 
         if self.reuse_port:
             reuse_port_option = getattr(socket, "SO_REUSEPORT", None)
-            if reuse_port_option is None:
-                raise OSError("This platform does not support SO_REUSEPORT.")
-            self.socket.setsockopt(
-                socket.SOL_SOCKET,
-                reuse_port_option,
-                1,
-            )
+
+            if reuse_port_option is not None:
+                self.socket.setsockopt(
+                    socket.SOL_SOCKET,
+                    reuse_port_option,
+                    1,
+                )
+            else:
+                # Windows fallback. This does not fully replicate
+                # SO_REUSEPORT behavior on other platforms.
+                self.socket.setsockopt(
+                    socket.SOL_SOCKET,
+                    socket.SO_REUSEADDR,
+                    1,
+                )
 
         self.socket.bind((self.host, self.port))
 
