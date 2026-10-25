@@ -928,6 +928,35 @@ class InteractiveNode:
             return send_path
         return path
 
+    def _send_images_at(
+        self,
+        paths: list[Path],
+        send_at: float,
+    ) -> None:
+        """Wait until a scheduled Unix timestamp, then send images."""
+
+        if self.role != 0:
+            self.output.write(
+                "[COMMAND] Only Sensor Nodes can send images."
+            )
+            return
+
+        wait_time = send_at - time.time()
+
+        if wait_time > 0:
+            self.output.write(
+                f"[SCHEDULE] waiting {wait_time:.3f}s "
+                "before transmission..."
+            )
+            time.sleep(wait_time)
+
+        self.output.write(
+            f"[SCHEDULE] starting transmission at "
+            f"{time.time():.6f}"
+        )
+
+        self._send_images(paths)
+
     def _send_images(self, paths: list[Path]) -> None:
         if self.role != 0:
             self.output.write("[COMMAND] Only Sensor Nodes can send images.")
@@ -1026,6 +1055,7 @@ class InteractiveNode:
     def command_loop(self) -> None:
         self.output.write(
             "Commands: help, status, neighbors, send <image>, "
+            "send-at <unix_timestamp> <image>, "
             "send-batch <folder> [label], send-mnist <image> [label], "
             "export [csv_path], quit"
         )
@@ -1070,6 +1100,25 @@ class InteractiveNode:
                     self.output.write("Usage: send <image_path>")
                     continue
                 self._send_images([Path(parts[1])])
+            elif command == "send-at":
+                if len(parts) != 3:
+                    self.output.write(
+                        "Usage: send-at <unix_timestamp> <image_path>"
+                    )
+                    continue
+
+                try:
+                    send_at = float(parts[1])
+                except ValueError:
+                    self.output.write(
+                        "[COMMAND] Invalid Unix timestamp."
+                    )
+                    continue
+
+                self._send_images_at(
+                    [Path(parts[2])],
+                    send_at,
+                )
             elif command in {"send-batch", "images", "/images"}:
                 if len(parts) not in {2, 3}:
                     self.output.write(
