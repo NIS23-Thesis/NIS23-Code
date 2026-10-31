@@ -102,6 +102,7 @@ class CommunicationModule:
         role: Optional[int] = None,
         version: int = 1,
         buffer_size: int = 128,
+        send_buffer_capacity: int = 128,
         poll_interval: float = 0.01,
         auto_start: bool = True,
         poll_socket: bool = True,
@@ -121,6 +122,12 @@ class CommunicationModule:
             raise ValueError("Role must be 0, 1, or None.")
         if not 0 <= version <= 0x0F:
             raise ValueError("Version must fit within 4 bits.")
+        if (
+            not isinstance(send_buffer_capacity, int)
+            or isinstance(send_buffer_capacity, bool)
+            or send_buffer_capacity <= 0
+        ):
+            raise ValueError("send_buffer_capacity must be a positive integer.")
 
         self.socket_interface = socket_interface
         self.discovery_socket_interface = discovery_socket_interface
@@ -129,6 +136,9 @@ class CommunicationModule:
         self.poll_interval = poll_interval
         self.poll_socket = poll_socket
         self.datagram_buffer = DatagramBuffer(max_size=buffer_size)
+        self._send_buffer: Deque[Tuple[dict, Address]] = deque()
+        self._send_buffer_lock = threading.Lock()
+        self._send_buffer_capacity = send_buffer_capacity
         self.receive_buffer = ReceiveBuffer()
         self.neighbor_buffer = ReceiveBuffer()
         self.sensor_buffer = ReceiveBuffer()
@@ -249,6 +259,79 @@ class CommunicationModule:
             raise ValueError("Destination must be a (host, port) tuple.")
         return destination
 
+    @property
+    def send_buffer_size(self) -> int:
+        """Return the number of messages waiting to be transmitted."""
+        with self._send_buffer_lock:
+            return len(self._send_buffer)
+
+
+    @property
+    def send_buffer_available(self) -> bool:
+        """Return whether the outgoing buffer has room for another message."""
+        with self._send_buffer_lock:
+            return len(self._send_buffer) < self._send_buffer_capacity
+
+
+    def try_enqueue_message(
+        self,
+        message_obj: Any,
+        destination: Optional[Address] = None,
+    ) -> bool:
+        """Queue a message for transmission without blocking.
+
+        Returns True when queued, or False when the buffer is full.
+        Existing send_message() calls remain immediate.
+        """
+        packet = self._as_dict(message_obj)
+
+        if "packet_type" not in packet:
+            raise ValueError("Message requires a packet_type.")
+
+        if destination is None:
+            destination = self._resolve_destination(packet)
+
+        if destination is None:
+            raise ValueError(
+                "Destination address is required for try_enqueue_message()."
+            )
+
+        destination = self._validate_destination(destination)
+
+        with self._send_buffer_lock:
+            if len(self._send_buffer) >= self._send_buffer_capacity:
+                return False
+
+            self._send_buffer.append((packet, destination))
+
+        self._emit(
+            "message_queued",
+            packet_type=self._packet_type(packet["packet_type"]),
+            destination=destination,
+            send_buffer_size=self.send_buffer_size,
+        )
+        return True
+
+
+    def _service_send_buffer(self) -> bool:
+        """Submit one queued message through the existing send pipeline."""
+        with self._send_buffer_lock:
+            if not self._send_buffer:
+                return False
+
+            message, destination = self._send_buffer.popleft()
+
+        try:
+            self.send_message(message, destination=destination)
+        except Exception as exc:
+            self._record_error(
+                f"Failed to send queued message: {exc}",
+                b"",
+                destination,
+            )
+
+        return True
+
     def send_message(
         self,
         message_obj: Any,
@@ -282,6 +365,9 @@ class CommunicationModule:
         if not isinstance(sequence_number, int) or not 0 <= sequence_number <= 0xFFFF:
             raise ValueError("Sequence number must fit within 16 bits.")
         packet["sequence_number"] = sequence_number
+
+        if packet_type == PacketType.SENSOR_DATA and "data_id" not in packet:
+            packet["data_id"] = self._allocate_data_id()
 
         if packet_type in (PacketType.SENSOR_DATA, PacketType.MODEL_UPDATE):
             return self._send_reliable_message(packet, destination)
@@ -478,19 +564,27 @@ class CommunicationModule:
         return True
 
     def _drain_loop(self) -> None:
-        # Process incoming data and reliability tasks until stopped.
+        # Process outgoing messages, incoming data, and reliability tasks.
         while not self._stop_event.is_set():
             did_work = False
+
             try:
+                did_work = self._service_send_buffer() or did_work
+
                 if self.poll_socket:
                     did_work = self.ingest_socket_once() or did_work
+
                 did_work = self._drain_once() or did_work
                 did_work = self._service_reliability() or did_work
+
             except OSError as exc:
                 if not self._stop_event.is_set():
                     self._record_error(str(exc), b"")
             except Exception as exc:
-                self._record_error(f"communication loop error: {exc}", b"")
+                self._record_error(
+                    f"communication loop error: {exc}",
+                    b"",
+                )
 
             if not did_work:
                 time.sleep(self.poll_interval)
@@ -519,9 +613,9 @@ class CommunicationModule:
         self,
         packet: dict,
         source_address: Address,
-    ) -> None:
+    ) -> bool:
         if self.neighbor_module is None:
-            return
+            return True
 
         packet_type = packet["packet_type"]
 
@@ -532,7 +626,7 @@ class CommunicationModule:
                 else NodeRole.CLUSTER_HEAD
             )
 
-            self.neighbor_module.process_hello(
+            return self.neighbor_module.process_hello(
                 ip_address=source_address[0],
                 port=source_address[1],
                 node_role=node_role,
@@ -540,7 +634,7 @@ class CommunicationModule:
             )
 
         elif packet_type == PacketType.JOIN:
-            self.neighbor_module.process_join(
+            accepted = self.neighbor_module.process_join(
                 ip_address=source_address[0],
                 port=source_address[1],
                 join_id=packet["join_id"],
@@ -553,13 +647,14 @@ class CommunicationModule:
                     "role": 1,
                     "join_id": packet["join_id"],
                     "timeout": 30,
-                    "rejected": 0,
+                    "rejected": 0 if accepted else 1,
                 },
                 destination=source_address,
             )
+            return accepted
 
         elif packet_type == PacketType.JOIN_ACCEPT:
-            self.neighbor_module.process_join_accept(
+            return self.neighbor_module.process_join_accept(
                 ip_address=source_address[0],
                 port=source_address[1],
                 join_id=packet["join_id"],
@@ -571,6 +666,9 @@ class CommunicationModule:
                 ip_address=source_address[0],
                 port=source_address[1],
             )
+            return True
+
+        return True
 
 
     def _handle_parsed_packet(
@@ -607,10 +705,13 @@ class CommunicationModule:
             if source_address is not None:
                 packet["source_address"] = source_address
 
-            self._consume_reliable_fragment(
+            complete_message = self._consume_reliable_fragment(
                 packet,
                 source_address,
             )
+
+            if complete_message is None:
+                return
 
             if packet_type == PacketType.SENSOR_DATA:
                 if source_address is not None and self.neighbor_module is not None:
@@ -634,14 +735,20 @@ class CommunicationModule:
                 PacketType.JOIN_ACCEPT,
                 PacketType.LEAVE,
             ):
-                self._process_neighbor_packet(
+                accepted = self._process_neighbor_packet(
                     packet,
                     source_address,
                 )
+                if packet_type == PacketType.HELLO and not accepted:
+                    return
 
         self._deliver(packet)
 
-    def _consume_reliable_fragment(self, packet: dict, source_address: Address) -> None:
+    def _consume_reliable_fragment(
+        self,
+        packet: dict,
+        source_address: Address,
+    ) -> Optional[dict]:
         # Store a received fragment and handle reassembly, acknowledgements, and delivery.
         with self._state_lock:
             result = self.reliability_manager.receive_fragment(source_address, packet)
@@ -660,7 +767,7 @@ class CommunicationModule:
             self._send_ack(result.key, ack)
 
         if result.complete_fragments is None:
-            return
+            return None
 
         complete = dict(result.complete_fragments[0])
         complete["payload"] = reassemble_fragments(result.complete_fragments)
@@ -693,6 +800,7 @@ class CommunicationModule:
             source=source_address,
         )
         self._deliver(complete)
+        return complete
 
     # Build and send an acknowledgement packet.
     def _send_ack(self, key: TransferKey, ack: AckInfo) -> None:

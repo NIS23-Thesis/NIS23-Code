@@ -28,5 +28,6 @@ class NodeConfig:
     completed_retention: float = 2.0
     max_retries: int = 3
     # Federated Learning
-    training_threshold: int = 10
+    expected_observations: int = 10
+    training_threshold: float = 0.80
     aggregation_threshold: int = 1
