@@ -76,6 +76,9 @@ class RunData:
         self._manifest_mtime_ns = None
         self._file_state = {}
         self._events = deque(maxlen=max_events)
+        # Compact, time-indexed application relationships. Unlike radio links, these
+        # are evidenced by FLAME protocol events and are never inferred from distance.
+        self._relationships = deque(maxlen=50_000)
         self._next_seq = 1
         self._address_to_name = {}
         self._trace_payload_cache = None
@@ -271,7 +274,7 @@ class RunData:
         source_node = None
         target_node = None
 
-        if event_type in {"receive", "protocol_receive"}:
+        if event_type in {"receive", "protocol_receive", "flame_sensor_received", "flame_model_received"}:
             source_node = self._node_from_address(raw.get("source"))
             target_node = node_name
         else:
@@ -293,6 +296,7 @@ class RunData:
             "source": source_node,
             "target": target_node,
             "packet_type": header.get("packet_type"),
+            "is_broadcast": bool(raw.get("is_broadcast", False)),
             "sequence_number": header.get("sequence_number"),
             "reason": raw.get("reason"),
             "distance_m": raw.get("distance_m"),
@@ -343,11 +347,38 @@ class RunData:
                                 raw = json.loads(line)
                             except json.JSONDecodeError:
                                 continue
-                            self._events.append(self._normalize_event(raw, path.name, stream_type))
+                            event = self._normalize_event(raw, path.name, stream_type)
+                            self._events.append(event)
+                            if stream_type == "protocol" and event["event"] in {
+                                "flame_joined", "flame_leave_sent", "flame_sensor_received",
+                                "flame_model_sent", "flame_model_received",
+                            } and event["source"] and event["target"]:
+                                self._relationships.append({
+                                    "seq": event["seq"], "time_s": event["time_s"],
+                                    "action": event["event"],
+                                    "source": event["source"], "target": event["target"],
+                                })
                         state["offset"] = stream.tell()
                         state["size"] = size
                 except (OSError, UnicodeDecodeError):
                     continue
+
+    def relationships(self):
+        """Return observed FLAME relationships, not guessed membership or physical links.
+
+        The client replays these events against the displayed time. Missing diagnostic
+        logging means *unknown*, never 'not associated'. SN-side JOIN acceptance and
+        CH-side sensor acceptance are reported separately so the UI does not present
+        a provisional association as confirmed on both endpoints.
+        """
+        with self._lock:
+            self._refresh_events()
+            logging_enabled = bool(self._plan and self._plan.logging_config.protocol_events)
+            return {
+                "available": logging_enabled,
+                "events": sorted(self._relationships, key=lambda e: (e["time_s"], e["seq"])),
+                "truncated": len(self._relationships) == self._relationships.maxlen,
+            }
 
     def events(self, from_s=None, to_s=None, after_seq=None, limit=2000):
         with self._lock:
@@ -607,6 +638,8 @@ class VisualizerHandler(SimpleHTTPRequestHandler):
                     self._json(run.metrics())
                 elif parsed.path == "/api/timeline":
                     self._json(run.timeline(query.get("bucket_s", [1.0])[0]))
+                elif parsed.path == "/api/relationships":
+                    self._json(run.relationships())
                 else:
                     self._json({"error": "unknown API endpoint"}, HTTPStatus.NOT_FOUND)
                 return

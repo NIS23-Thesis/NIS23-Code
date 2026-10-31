@@ -46,8 +46,9 @@ class Node:
     in a separate child process, so the node runtime itself has no worker-thread GIL contention.
     """
 
-    def __init__(self, spec, plan, node_socket, protocol_class=NullProtocol, *, event_path=None, stop_event=None):
+    def __init__(self, spec, plan, node_socket, protocol_class=NullProtocol, *, event_path=None, stop_event=None, results_dir=None):
         self.spec = spec
+        self.results_dir = results_dir
         self.plan = plan
         self.socket = node_socket
         self.stop_event = stop_event
@@ -197,6 +198,7 @@ def run_node(node_name, plan_path, results_dir, protocol_class_path=None, contro
             _load_protocol_class(protocol_class_path),
             event_path=event_path,
             stop_event=stop_event,
+            results_dir=results_dir,
         )
         if control is not None:
             control.send({"status": "ready"})

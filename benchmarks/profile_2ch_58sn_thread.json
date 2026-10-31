@@ -1,0 +1,18 @@
+{
+  "command": [
+    "python",
+    "clive/clive.py",
+    "--scenario",
+    "benchmarks/2ch_58sn_thread.json",
+    "--results",
+    "/tmp/clive_mem_bench"
+  ],
+  "returncode": 0,
+  "elapsed_s": 10.863,
+  "cgroup_baseline_bytes": 750747648,
+  "cgroup_peak_bytes": 1938579456,
+  "cgroup_extra_peak_bytes": 1187831808,
+  "peak_cgroup_tasks": 198,
+  "stdout": "/tmp/clive_mem_bench/run-l8ul6civ\n",
+  "stderr": ""
+}

@@ -1,0 +1,18 @@
+{
+  "command": [
+    "python",
+    "clive/clive.py",
+    "--scenario",
+    "benchmarks/20ch_200sn_capacity.json",
+    "--results",
+    "/tmp/clive_mem_bench"
+  ],
+  "returncode": 0,
+  "elapsed_s": 20.869,
+  "cgroup_baseline_bytes": 721997824,
+  "cgroup_peak_bytes": 3175428096,
+  "cgroup_extra_peak_bytes": 2453430272,
+  "peak_cgroup_tasks": 523,
+  "stdout": "/tmp/clive_mem_bench/run-nhl7txpf\n",
+  "stderr": ""
+}

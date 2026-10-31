@@ -6,7 +6,6 @@ from .model_manager import (
     deserialize_model_state,
     serialize_model_state,
 )
-from .mnist_trainer import MNISTMLP, MNISTTrainer
 from .module import FederatedLearningModule
 from .trainer import Trainer
 
@@ -23,3 +22,14 @@ __all__ = [
     "deserialize_model_state",
     "serialize_model_state",
 ]
+
+
+def __getattr__(name):
+    """Load PyTorch trainers only on demand (never in sensor-only workers).
+
+    Keeping MNISTMLP/MNISTTrainer public maintains existing import compatibility.
+    """
+    if name in ("MNISTMLP", "MNISTTrainer"):
+        from . import mnist_trainer
+        return getattr(mnist_trainer, name)
+    raise AttributeError(name)

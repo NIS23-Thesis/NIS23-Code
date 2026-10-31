@@ -1,0 +1,19 @@
+{
+  "command": [
+    "python",
+    "-c",
+    "import sys;sys.path.insert(0,\"clive\");import torch;import clive;clive.main()",
+    "--scenario",
+    "benchmarks/2ch_58sn_thread.json",
+    "--results",
+    "/tmp/clive_mem_bench"
+  ],
+  "returncode": 0,
+  "elapsed_s": 10.552,
+  "cgroup_baseline_bytes": 720904192,
+  "cgroup_peak_bytes": 1995288576,
+  "cgroup_extra_peak_bytes": 1274384384,
+  "peak_cgroup_tasks": 203,
+  "stdout": "/tmp/clive_mem_bench/run-8awso238\n",
+  "stderr": ""
+}

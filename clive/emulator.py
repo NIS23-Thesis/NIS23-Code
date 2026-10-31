@@ -21,7 +21,7 @@ from nodesocket import MetricsCollector
 
 
 class Emulator:
-    def __init__(self, plan_path, results_dir, *, protocol_class_path=None):
+    def __init__(self, plan_path, results_dir, *, protocol_class_path="flame_protocol:FlameProtocol"):
         self.results_dir = os.path.abspath(results_dir)
         self.plan = EmulationPlan.load(os.path.abspath(plan_path))
         self.protocol_class_path = protocol_class_path
@@ -62,6 +62,14 @@ class Emulator:
     def run(self):
         self.plan.validate()
         nodes = list(self.plan.nodes)
+        # Warm the shared sample cache once in the supervisor. A cold cache must
+        # never cause 200 sensors to decompress the full MNIST dataset at once.
+        if (self.protocol_class_path == "flame_protocol:FlameProtocol" and
+                self.plan.flame_settings.get("sample_source", "mnist") == "mnist" and
+                any(int(n.role) == 0 for n in nodes)):
+            from pathlib import Path
+            from mnist_cache import prepare_mnist_cache
+            prepare_mnist_cache(Path(__file__).resolve().parent.parent / "mnist" / "mnist.npz")
         os.makedirs(self.results_dir, exist_ok=True)
         self.run_dir = tempfile.mkdtemp(prefix="run-", dir=self.results_dir)
         local_plan_path = os.path.join(self.run_dir, "plan.json")
@@ -74,9 +82,15 @@ class Emulator:
             "success": False,
             "status": "starting",
             "execution": "localhost",
-            "process_architecture": "one node process + one radio child process per virtual node",
-            "emulation_worker_threads": 0,
-            "gil_isolation": "node/protocol and radio/TX execute in separate OS processes",
+            "process_architecture": (
+                "one node process + one radio thread per virtual node" if self.plan.config.radio_execution == "thread"
+                else "one node process + one radio child process per virtual node"
+            ),
+            "emulation_worker_threads": len(nodes) if self.plan.config.radio_execution == "thread" else 0,
+            "gil_isolation": (
+                "node and radio share a GIL; CPU saturation may affect timing" if self.plan.config.radio_execution == "thread"
+                else "node/protocol and radio/TX execute in separate OS processes"
+            ),
             "nodes": [n.name for n in nodes],
             "started_at": time.time(),
             "plan_path": local_plan_path,

@@ -1,0 +1,36 @@
+{
+  "num_ch": 20,
+  "num_sn": 200,
+  "runtime": {
+    "duration_s": 3.5,
+    "seed": 810,
+    "startup_delay_s": 8.0,
+    "readiness_timeout_s": 240,
+    "start_tolerance_s": 10.0,
+    "worker_grace_s": 15.0,
+    "radio_execution": "thread",
+    "io_poll_interval_s": 0.03
+  },
+  "logging": {
+    "protocol_events": false,
+    "packet_events": false
+  },
+  "link": {
+    "range_mode": "explicit",
+    "max_range_m": 70.0,
+    "max_data_rate_bps": 54000000
+  },
+  "mobility": {
+    "model": "static",
+    "initial_topology": "random",
+    "tick_interval": 0.5,
+    "area_width_m": 100.0,
+    "area_height_m": 100.0
+  },
+  "flame": {
+    "sample_source": "mnist",
+    "trainer": "mnist",
+    "sample_interval_s": 30.0,
+    "hello_interval_s": 5.0
+  }
+}

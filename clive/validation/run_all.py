@@ -12,7 +12,11 @@ CHECKS = [
     "validate_optimizations.py",
     "validate_nodesocket.py",
     "validate_visualizer.py",
+    "validate_visualizer_links.py",
     "validate_clive.py",
+    "validate_flame_integration.py",
+    "validate_control_center.py",
+    "validate_memory_optimizations.py",
 ]
 for name in CHECKS:
     print(f"\n=== {name} ===", flush=True)

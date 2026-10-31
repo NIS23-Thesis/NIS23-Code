@@ -1,0 +1,18 @@
+{
+  "command": [
+    "python",
+    "clive/clive.py",
+    "--scenario",
+    "benchmarks/mnist_small_thread.json",
+    "--results",
+    "/tmp/clive_mem_bench"
+  ],
+  "returncode": 0,
+  "elapsed_s": 16.396,
+  "cgroup_baseline_bytes": 722345984,
+  "cgroup_peak_bytes": 1325957120,
+  "cgroup_extra_peak_bytes": 603611136,
+  "peak_cgroup_tasks": 92,
+  "stdout": "/tmp/clive_mem_bench/run-gd4odmr0\n",
+  "stderr": ""
+}

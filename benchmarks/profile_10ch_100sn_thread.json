@@ -1,0 +1,18 @@
+{
+  "command": [
+    "python",
+    "clive/clive.py",
+    "--scenario",
+    "benchmarks/10ch_100sn_thread.json",
+    "--results",
+    "/tmp/clive_mem_bench"
+  ],
+  "returncode": 0,
+  "elapsed_s": 18.636,
+  "cgroup_baseline_bytes": 753070080,
+  "cgroup_peak_bytes": 4294881280,
+  "cgroup_extra_peak_bytes": 3541811200,
+  "peak_cgroup_tasks": 303,
+  "stdout": "/tmp/clive_mem_bench/run-pdp4in6c\n",
+  "stderr": ""
+}

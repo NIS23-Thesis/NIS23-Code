@@ -713,13 +713,7 @@ class CommunicationModule:
             if complete_message is None:
                 return
 
-            if packet_type == PacketType.SENSOR_DATA:
-                if source_address is not None and self.neighbor_module is not None:
-                    self.neighbor_module.process_sensor_data(
-                        ip_address=source_address[0],
-                        port=source_address[1],
-                    )
-            else:
+            if packet_type == PacketType.MODEL_UPDATE:
                 self._refresh_neighbor_membership(source_address)
 
             return
@@ -799,6 +793,16 @@ class CommunicationModule:
             fragment_count=len(result.complete_fragments),
             source=source_address,
         )
+        # A valid, fully reassembled first SENSOR_DATA promotes a provisional
+        # JOIN_PENDING sensor before the application callback is invoked.
+        # Previously this happened *after* _deliver(), making the adapter
+        # reject the first observation even though transport had ACKed it.
+        if complete["packet_type"] == PacketType.SENSOR_DATA:
+            if self.neighbor_module is not None and source_address is not None:
+                self.neighbor_module.process_sensor_data(
+                    ip_address=source_address[0],
+                    port=source_address[1],
+                )
         self._deliver(complete)
         return complete
 

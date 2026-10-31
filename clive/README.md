@@ -80,11 +80,11 @@ scripts/run_scenario.sh heterogeneous_ranges --protocol example_protocol:Indepen
 python3 clive.py --scenario configs/all_options.json --results results
 ```
 
-Use a real protocol with:
+FLAME is the default protocol (`flame_protocol:FlameProtocol`). For the integrated FLAME configuration and end-to-end tests, see the root `README-INTEGRATION.md`. To run a different protocol:
 
 ```bash
 python3 clive.py --scenario configs/demos/static_star.json \
-  --protocol your_module:YourProtocol
+  --protocol example_protocol:IndependentProbeProtocol
 ```
 
 ## Evaluation sets

@@ -362,6 +362,9 @@ class EmulationConfig:
     worker_grace_s: float = 5.0
     readiness_timeout_s: float = 30.0
     start_tolerance_s: float = 0.10
+    # "thread" avoids one additional interpreter/process per node at high density.
+    # Identical radio engine and UDP paths; less CPU isolation than "process".
+    radio_execution: str = "process"
 
     def validate(self) -> None:
         for name in (
@@ -373,6 +376,8 @@ class EmulationConfig:
             positive_int(getattr(self, name), name)
         if type(self.seed) is not int:
             raise ValueError("seed must be an integer")
+        if self.radio_execution not in ("process", "thread"):
+            raise ValueError("radio_execution must be process or thread")
 
     def to_dict(self):
         return asdict(self)
@@ -421,6 +426,7 @@ class EmulationPlan:
     epoch_start: float
     logging_config: LoggingConfig = field(default_factory=LoggingConfig)
     trace_storage: Optional[Dict[str, Any]] = None
+    flame_settings: Dict[str, Any] = field(default_factory=dict)
 
     def _node_names(self):
         return [node.name for node in self.nodes]
@@ -470,6 +476,7 @@ class EmulationPlan:
             "logging_config": self.logging_config.to_dict(),
             "epoch_start": self.epoch_start,
             "trace_sha256": self.trace_digest(),
+            "flame_settings": self.flame_settings,
         }
 
     @classmethod
@@ -486,6 +493,7 @@ class EmulationPlan:
             d["epoch_start"],
             LoggingConfig.from_dict(d.get("logging_config", {})),
             dict(d["trace_storage"]) if d.get("trace_storage") is not None else None,
+            dict(d.get("flame_settings", {})),
         )
         if plan.trace_storage is not None:
             if plan_dir is None:
@@ -504,6 +512,8 @@ class EmulationPlan:
         self.mobility_config.validate()
         self.config.validate()
         self.logging_config.validate()
+        if not isinstance(self.flame_settings, dict):
+            raise ValueError("flame_settings must be a JSON object")
         finite(self.epoch_start, "epoch_start", 0, strictly=True)
         if not self.nodes:
             raise ValueError("an emulation plan must contain at least one node")
@@ -1027,6 +1037,7 @@ class Orchestrator:
             config=config,
             epoch_start=time.time() + config.startup_delay_s,
             logging_config=logging_config,
+            flame_settings=dict(scenario.get("flame", {})),
         )
         plan.validate()
         return plan

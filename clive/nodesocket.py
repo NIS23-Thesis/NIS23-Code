@@ -26,6 +26,7 @@ import select
 import socket
 import time
 import traceback
+import threading
 from collections import defaultdict
 from itertools import count
 
@@ -714,6 +715,26 @@ def _radio_worker_main(spec, plan, seed, command_conn, status_conn, log_path):
         status_conn.close()
 
 
+class _RadioThread(threading.Thread):
+    """Optional compact radio runtime; executes the SAME _radio_worker_main.
+
+    Separating radio into a thread saves a full Python interpreter per node.
+    The GIL may affect timing under CPU saturation: use process mode for timing
+    baselines and compare before publishing experimental results.
+    """
+    def __init__(self, *, name, target, args):
+        super().__init__(name=name, target=target, args=args, daemon=True)
+
+    @property
+    def exitcode(self):
+        return None if self.is_alive() else 0
+
+    def terminate(self):
+        # Threads cannot be forcibly killed safely. NodeSocket has already
+        # sent 'close'; the entire node process is supervisor-owned and exits.
+        pass
+
+
 class _CombinedMetrics:
     def __init__(self, owner):
         self.owner = owner
@@ -771,14 +792,24 @@ class NodeSocket:
         parent_status_recv, child_status_send = self._mp_context.Pipe(duplex=False)
         self._command = parent_cmd_send
         self._status = parent_status_recv
-        self._radio = self._mp_context.Process(
-            name=f"CLIVE-Radio-{node_spec.name}",
-            target=_radio_worker_main,
-            args=(node_spec, plan, seed, child_cmd_recv, child_status_send, radio_log_path),
-        )
+        worker_args = (node_spec, plan, seed, child_cmd_recv, child_status_send, radio_log_path)
+        self.radio_mode = plan.config.radio_execution
+        if self.radio_mode == "thread":
+            self._radio = _RadioThread(
+                name=f"CLIVE-Radio-{node_spec.name}",
+                target=_radio_worker_main, args=worker_args,
+            )
+        else:
+            self._radio = self._mp_context.Process(
+                name=f"CLIVE-Radio-{node_spec.name}",
+                target=_radio_worker_main, args=worker_args,
+            )
         self._radio.start()
-        child_cmd_recv.close()
-        child_status_send.close()
+        # A forked process inherited its own handles; a thread uses the exact
+        # same handles, so closing them here would break the thread's IPC.
+        if self.radio_mode == "process":
+            child_cmd_recv.close()
+            child_status_send.close()
         self._wait_radio_ready()
 
     def _wait_radio_ready(self):

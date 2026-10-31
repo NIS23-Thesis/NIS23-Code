@@ -103,14 +103,16 @@ def validate_plan_generation():
 
 
 def validate_process_architecture():
-    core_files = [
-        ROOT / "nodebootstrapper.py",
-        ROOT / "nodesocket.py",
-        ROOT / "protocol_interface.py",
-        ROOT / "example_protocol.py",
-    ]
+    # The memory-optimized backend deliberately supports an optional radio thread.
+    # The protocol event loop stays single-threaded, and the original process
+    # radio backend is the default and remains available for timing baselines.
+    core_files = [ROOT / "nodebootstrapper.py", ROOT / "protocol_interface.py", ROOT / "example_protocol.py"]
     threaded = [path.name for path in core_files if "import threading" in path.read_text() or "threading.Thread" in path.read_text()]
-    require(not threaded, "Emulation runtime and probe contain no Python worker-thread implementation")
+    require(not threaded, "Protocol runtime and probe still contain no worker threads")
+    from orchestrator import EmulationConfig
+    require(EmulationConfig().radio_execution == "process", "Original process-isolated radio is still the default")
+    from nodesocket import NodeSocket, _RadioThread
+    require(callable(_RadioThread) and callable(NodeSocket), "Optional compact radio backend is explicit")
 
 
 def validate_protocol_boundary():
@@ -174,7 +176,7 @@ def stress_200():
         })
         path = td / "plan.json"
         plan.save(path)
-        run_dir = Path(Emulator(str(path), str(td / "results")).run())
+        run_dir = Path(Emulator(str(path), str(td / "results"), protocol_class_path="protocol_interface:NullProtocol").run())
         manifest = json.loads((run_dir / "run-manifest.json").read_text())
         metrics = json.loads((run_dir / "metrics.json").read_text())
         require(manifest["success"], "200-node localhost process run completes")

@@ -1,0 +1,180 @@
+{
+  "command": [
+    "python",
+    "clive/clive.py",
+    "--scenario",
+    "benchmarks/6ch_60sn_sustained.json",
+    "--results",
+    "/tmp/clive_mem_bench"
+  ],
+  "returncode": 0,
+  "elapsed_s": 31.761,
+  "cgroup_baseline_bytes": 218050560,
+  "cgroup_peak_bytes": 1058578432,
+  "cgroup_extra_peak_bytes": 840527872,
+  "peak_cgroup_tasks": 186,
+  "samples": [
+    {
+      "time_s": 0.0,
+      "memory_bytes": 217956352,
+      "tasks": 49
+    },
+    {
+      "time_s": 1.08,
+      "memory_bytes": 884895744,
+      "tasks": 163
+    },
+    {
+      "time_s": 2.13,
+      "memory_bytes": 1043951616,
+      "tasks": 186
+    },
+    {
+      "time_s": 3.04,
+      "memory_bytes": 1043951616,
+      "tasks": 186
+    },
+    {
+      "time_s": 4.09,
+      "memory_bytes": 1043951616,
+      "tasks": 186
+    },
+    {
+      "time_s": 5.14,
+      "memory_bytes": 1043951616,
+      "tasks": 186
+    },
+    {
+      "time_s": 6.04,
+      "memory_bytes": 1056272384,
+      "tasks": 186
+    },
+    {
+      "time_s": 7.1,
+      "memory_bytes": 1056272384,
+      "tasks": 186
+    },
+    {
+      "time_s": 8.15,
+      "memory_bytes": 1056272384,
+      "tasks": 186
+    },
+    {
+      "time_s": 9.05,
+      "memory_bytes": 1057308672,
+      "tasks": 186
+    },
+    {
+      "time_s": 10.1,
+      "memory_bytes": 1057308672,
+      "tasks": 186
+    },
+    {
+      "time_s": 11.01,
+      "memory_bytes": 1057562624,
+      "tasks": 186
+    },
+    {
+      "time_s": 12.06,
+      "memory_bytes": 1057808384,
+      "tasks": 186
+    },
+    {
+      "time_s": 13.11,
+      "memory_bytes": 1057808384,
+      "tasks": 186
+    },
+    {
+      "time_s": 14.01,
+      "memory_bytes": 1057808384,
+      "tasks": 186
+    },
+    {
+      "time_s": 15.07,
+      "memory_bytes": 1057808384,
+      "tasks": 186
+    },
+    {
+      "time_s": 16.12,
+      "memory_bytes": 1057808384,
+      "tasks": 186
+    },
+    {
+      "time_s": 17.02,
+      "memory_bytes": 1057804288,
+      "tasks": 186
+    },
+    {
+      "time_s": 18.07,
+      "memory_bytes": 1057804288,
+      "tasks": 186
+    },
+    {
+      "time_s": 19.13,
+      "memory_bytes": 1057804288,
+      "tasks": 186
+    },
+    {
+      "time_s": 20.03,
+      "memory_bytes": 1057804288,
+      "tasks": 186
+    },
+    {
+      "time_s": 21.08,
+      "memory_bytes": 1057804288,
+      "tasks": 186
+    },
+    {
+      "time_s": 22.13,
+      "memory_bytes": 1057804288,
+      "tasks": 186
+    },
+    {
+      "time_s": 23.04,
+      "memory_bytes": 1057804288,
+      "tasks": 186
+    },
+    {
+      "time_s": 24.09,
+      "memory_bytes": 1058320384,
+      "tasks": 186
+    },
+    {
+      "time_s": 25.14,
+      "memory_bytes": 1058320384,
+      "tasks": 186
+    },
+    {
+      "time_s": 26.04,
+      "memory_bytes": 1058320384,
+      "tasks": 186
+    },
+    {
+      "time_s": 27.1,
+      "memory_bytes": 1058320384,
+      "tasks": 186
+    },
+    {
+      "time_s": 28.0,
+      "memory_bytes": 1058320384,
+      "tasks": 186
+    },
+    {
+      "time_s": 29.05,
+      "memory_bytes": 1058320384,
+      "tasks": 186
+    },
+    {
+      "time_s": 30.11,
+      "memory_bytes": 1058320384,
+      "tasks": 186
+    },
+    {
+      "time_s": 31.01,
+      "memory_bytes": 1058320384,
+      "tasks": 186
+    }
+  ],
+  "stdout": "/tmp/clive_mem_bench/run-bjlfp7tx\n",
+  "stderr": ""
+}

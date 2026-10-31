@@ -37,7 +37,8 @@ def main():
     parser.add_argument("--results", default="results")
     parser.add_argument(
         "--protocol",
-        help="ProtocolInterface subclass as module:ClassName; default is NullProtocol",
+        default="flame_protocol:FlameProtocol",
+        help="ProtocolInterface module:ClassName; defaults to integrated FLAME (use protocol_interface:NullProtocol for no traffic)",
     )
     args = parser.parse_args()
 

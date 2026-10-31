@@ -8,131 +8,203 @@
 </head>
 <body>
   <header class="topbar">
-    <div>
-      <div class="eyebrow">Computers Living In Virtual Networks Emulator</div>
-      <h1>CLIVE <span>Visualizer</span></h1>
+    <div class="brand-block">
+      <div class="app-monogram" aria-hidden="true">
+        <svg viewBox="0 0 44 44" fill="none"><path d="M9 31V13L22 6L35 13V31L22 38L9 31Z" stroke="currentColor" stroke-width="1.7"/><path d="M13 27L21 19L27 25L34 16" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"/><circle cx="21" cy="19" r="2.5" fill="currentColor"/><circle cx="27" cy="25" r="2.5" fill="currentColor"/></svg>
+      </div>
+      <div class="brand-copy"><div class="eyebrow">NETWORK RESEARCH / EXPERIMENT ANALYSIS</div>
+        <h1>CLIVE <span>OBSERVATORY</span></h1>
+        <p class="topbar-subtitle">FLAME protocol &amp; mobility visualization</p></div>
     </div>
     <div class="header-actions">
-      <label class="run-select-wrap">Run
-        <select id="runSelect"></select>
+      <label class="field run-select-wrap"><span class="field-caption">ACTIVE EXPERIMENT</span>
+        <select id="runSelect" aria-label="Choose experiment run"></select>
       </label>
       <div id="statusPill" class="status waiting">WAITING</div>
+      <button id="sidebarToggle" class="icon-label-button" type="button" aria-pressed="false" title="Show or hide the information sidebar"><span aria-hidden="true">▣</span> <span class="sidebar-button-text">Hide panel</span></button>
     </div>
   </header>
 
-  <main class="dashboard">
+  <main class="app-shell" id="appShell">
     <section class="panel topology-panel">
-      <div class="panel-head">
-        <div>
-          <h2>MANET topology</h2>
+      <div class="panel-head panel-head-main">
+        <div class="map-heading"><div class="panel-kicker"><span class="signal-pip"></span> EXPERIMENT VIEW / 01</div>
+          <h2>Network topology</h2>
           <p id="topologySubtitle">Waiting for a CLIVE run…</p>
         </div>
-        <div class="legend">
-          <span><i class="dot ch"></i>Cluster Head</span>
-          <span><i class="dot sn"></i>Sensor Node</span>
-          <span><i class="line strong"></i>Reachable link</span>
+        <div class="header-cluster">
+          <button id="canvasFocusToggle" class="icon-label-button focus-button" type="button" aria-pressed="false" title="Focus on the topology"><span aria-hidden="true">⛶</span><span>Focus map</span></button>
         </div>
       </div>
+
+      <div class="mode-bar">
+        <div class="mode-bar-main">
+          <span class="mini-label" id="viewModeLabel">DISPLAY MODE</span>
+          <div class="mode-switch" role="group" aria-label="Topology visualization mode">
+            <button type="button" class="mode-button active" data-mode="protocol" aria-pressed="true"><span class="mode-icon" aria-hidden="true">⬡</span> FLAME protocol</button>
+            <button type="button" class="mode-button" data-mode="radio" aria-pressed="false"><span class="mode-icon" aria-hidden="true">◎</span> Radio range</button>
+            <button type="button" class="mode-button" data-mode="traffic" aria-pressed="false"><span class="mode-icon" aria-hidden="true">↗</span> Traffic</button>
+            <button type="button" class="mode-button" data-mode="none" aria-pressed="false"><span class="mode-icon" aria-hidden="true">◌</span> Nodes only</button>
+          </div>
+        </div>
+        <details class="layer-menu" id="layerMenu">
+          <summary aria-label="Open map layers and display settings"><span class="slider-icon" aria-hidden="true">☷</span> Layers <span class="chevron" aria-hidden="true">⌄</span></summary>
+          <div class="layer-menu-content">
+            <div class="setting-head"><strong>Map layers</strong><span>DISPLAY OPTIONS</span></div>
+            <label class="switch-row" for="showBackbone"><span><strong>CH backbone candidates</strong><small>Possible Cluster Head peer links</small></span><input type="checkbox" id="showBackbone" checked role="switch"><i aria-hidden="true"></i></label>
+            <label class="switch-row" for="showCandidates"><span><strong>Selected node candidates</strong><small>Eligible nearby peers for selected node</small></span><input type="checkbox" id="showCandidates" checked role="switch"><i aria-hidden="true"></i></label>
+            <label class="switch-row" for="showLabels"><span><strong>Node labels</strong><small>Always display node identifiers</small></span><input type="checkbox" id="showLabels" role="switch"><i aria-hidden="true"></i></label>
+            <label class="field stacky legacy-mode-select">Mode selector <select id="linkMode" aria-label="Topology link view">
+              <option value="protocol">FLAME protocol</option><option value="radio">Physical radio</option><option value="traffic">Observed traffic</option><option value="none">No links</option>
+            </select></label>
+          </div>
+        </details>
+      </div>
+
       <div class="canvas-wrap" id="canvasWrap">
         <canvas id="topologyCanvas"></canvas>
-        <div id="canvasEmpty" class="canvas-empty">Start CLIVE or select an existing run.</div>
-        <div class="map-controls" aria-label="Topology view controls">
-          <button id="zoomOut" type="button" title="Zoom out">−</button>
-          <button id="zoomReset" type="button" title="Reset zoom and pan"><span id="zoomReadout">100%</span></button>
-          <button id="zoomIn" type="button" title="Zoom in">+</button>
-        </div>
-        <div class="map-hint">Wheel to zoom · drag to pan · double-click to reset</div>
+        <div id="canvasEmpty" class="canvas-empty"><span class="empty-symbol" aria-hidden="true">◎</span><strong>No network data yet</strong><span>Start an experiment or choose a previous run to inspect its topology.</span></div>
+        <div class="map-legend" aria-label="Topology legend"><span><i class="dot ch"></i> Cluster Head</span><span><i class="dot sn"></i> Sensor Node</span><span class="legend-divider"></span><span><i class="line strong"></i> Observed link</span><span><i class="line dashed"></i> Candidate</span></div>
+        <div class="map-tools" aria-label="Zoom controls"><button id="zoomIn" type="button" title="Zoom in" aria-label="Zoom in">+</button><button id="zoomReset" type="button" title="Reset zoom and pan"><span id="zoomReadout">100%</span></button><button id="zoomOut" type="button" title="Zoom out" aria-label="Zoom out">−</button><button id="fitNodes" type="button" title="Fit all nodes on screen" aria-label="Fit all nodes on screen">FIT</button></div>
+        <div class="map-hint">DRAG TO PAN <b>·</b> SCROLL TO ZOOM <b>·</b> HOVER OR CLICK A LINK TO EXPLAIN IT</div>
+        <div id="nodeTooltip" class="node-tooltip" hidden></div>
+        <div id="linkTooltip" class="link-tooltip" role="tooltip" hidden></div>
+        <div id="linkDetailCard" class="link-detail-card" role="region" aria-label="Selected connection details" hidden></div>
         <div class="canvas-corner" id="canvasCorner"></div>
       </div>
-      <div class="transport">
-        <button id="playButton" class="primary">▶ Play</button>
+
+      <div class="transport-bar">
+        <button id="playButton" class="play-button" type="button" aria-label="Play or pause experiment">▶</button>
         <div class="time-readout"><strong id="timeReadout">0.00 s</strong><span id="tickReadout">tick 0</span></div>
+        <label for="timeSlider" class="sr-only">Experiment playback time</label>
         <input id="timeSlider" type="range" min="0" max="1" value="0" step="0.01">
-        <label>Speed
-          <select id="speedSelect">
-            <option value="0.25">0.25×</option>
-            <option value="0.5">0.5×</option>
-            <option value="1" selected>1×</option>
-            <option value="2">2×</option>
-            <option value="4">4×</option>
-          </select>
+        <label class="field inline speed-control">SPEED
+          <select id="speedSelect"><option value="0.25">0.25×</option><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option></select>
         </label>
       </div>
-      <div class="toggles">
-        <label><input type="checkbox" id="showLinks"> Selected-node links</label>
-        <label><input type="checkbox" id="showLabels"> Node labels</label>
+      <div class="info-strip">
+        <div id="linkSummary" class="link-summary" role="status">Select a node to inspect protocol-eligible links.</div>
+        <div id="linkNotice" class="link-notice">Dashed links indicate possible radio reachability, not confirmed FLAME membership.</div>
       </div>
     </section>
 
-    <aside class="side-stack">
-      <section class="panel metrics-panel">
-        <div class="panel-head compact"><h2>Network metrics</h2><span id="metricsMode">—</span></div>
-        <div class="metric-grid">
-          <article><span>Nodes</span><strong id="mNodes">—</strong></article>
-          <article><span>TX packets</span><strong id="mSent">—</strong></article>
-          <article><span>RX packets</span><strong id="mReceived">—</strong></article>
-          <article><span>Delivery drops</span><strong id="mDrops">—</strong></article>
-          <article><span>Drop ratio</span><strong id="mDropRatio">—</strong></article>
-          <article><span>TX energy</span><strong id="mEnergy">—</strong></article>
+    <aside class="side-rail" id="sideRail">
+      <details class="rail-card inspector-card" open>
+        <summary>
+          <div><span class="summary-kicker">ACTIVE SELECTION / 02</span><strong>Node inspector</strong></div>
+          <span id="selectedRole" class="summary-badge">None</span>
+        </summary>
+        <div class="rail-card-body">
+          <div id="selectedNode" class="selected-empty">Click a node in the topology.</div>
         </div>
-      </section>
+      </details>
 
-      <section class="panel selected-panel">
-        <div class="panel-head compact"><h2>Selected node</h2><span id="selectedRole">None</span></div>
-        <div id="selectedNode" class="selected-empty">Click a node in the topology.</div>
-      </section>
+      <details class="rail-card metrics-card" open>
+        <summary>
+          <div><span class="summary-kicker">EXPERIMENT SUMMARY / 03</span><strong>Network metrics</strong></div>
+          <span id="metricsMode" class="summary-badge">—</span>
+        </summary>
+        <div class="rail-card-body">
+          <div class="metric-grid">
+            <article><span>Nodes</span><strong id="mNodes">—</strong></article>
+            <article><span>TX packets</span><strong id="mSent">—</strong></article>
+            <article><span>RX packets</span><strong id="mReceived">—</strong></article>
+            <article><span>Delivery drops</span><strong id="mDrops">—</strong></article>
+            <article><span>Drop ratio</span><strong id="mDropRatio">—</strong></article>
+            <article><span>TX energy</span><strong id="mEnergy">—</strong></article>
+          </div>
+        </div>
+      </details>
 
-      <section class="panel config-panel">
-        <div class="panel-head compact"><h2>Experiment config</h2><span id="configRun">—</span></div>
-        <dl id="configList" class="config-list"></dl>
-      </section>
+      <details class="rail-card">
+        <summary>
+          <div>
+            <span class="summary-kicker">SCENARIO DETAILS / 04</span>
+            <strong>Experiment config</strong>
+          </div>
+          <span id="configRun" class="summary-badge">—</span>
+        </summary>
+        <div class="rail-card-body">
+          <dl id="configList" class="config-list"></dl>
+        </div>
+      </details>
     </aside>
 
-    <section id="trafficPanel" class="panel traffic-panel">
-      <div class="panel-head compact">
-        <div><h2>Traffic timeline</h2><p>Observed NodeSocket packet events per time bucket.</p></div>
-        <span id="trafficSummary" class="muted">—</span>
+    <section class="panel workbench-panel" id="workbenchPanel">
+      <div class="panel-head compact workbench-head">
+        <div>
+          <div class="panel-kicker">DETAILED TELEMETRY / 05</div>
+          <h2>Diagnostics</h2>
+          <p>Explore recorded traffic, protocol events, and per-node metrics.</p>
+        </div>
+        <div class="workbench-tabs" role="tablist" aria-label="Visualizer detail panes">
+          <button class="tab-button active" type="button" role="tab" aria-selected="true" data-target="trafficPanel" id="tab-traffic">Traffic</button>
+          <button class="tab-button" type="button" role="tab" aria-selected="false" data-target="eventsPanel" id="tab-events">Events</button>
+          <button class="tab-button" type="button" role="tab" aria-selected="false" data-target="nodesPanel" id="tab-nodes">Nodes</button>
+        </div>
       </div>
-      <div class="chart-wrap">
-        <canvas id="trafficCanvas"></canvas>
-        <div id="trafficEmpty" class="chart-empty" hidden></div>
-      </div>
-    </section>
 
-    <section id="eventsPanel" class="panel events-panel">
-      <div class="panel-head compact">
-        <div><h2>Event stream</h2><p>Packet and protocol events around the displayed experiment time.</p></div>
-        <select id="eventFilter">
-          <option value="all">All events</option>
-          <option value="transmit">Transmit</option>
-          <option value="receive">Receive</option>
-          <option value="delivery_drop">Drops</option>
-          <option value="protocol">Protocol</option>
-        </select>
-      </div>
-      <div class="event-table-wrap">
-        <table>
-          <thead><tr><th>Time</th><th>Event</th><th>From</th><th>To</th><th>Type / Seq</th><th>Link</th></tr></thead>
-          <tbody id="eventRows"></tbody>
-        </table>
-      </div>
-    </section>
+      <div class="workbench-body">
+        <section id="trafficPanel" class="tab-panel traffic-panel" role="tabpanel" aria-labelledby="tab-traffic">
+          <div class="section-intro">
+            <div>
+              <h3>Traffic timeline</h3>
+              <p>Observed NodeSocket packet events per time bucket.</p>
+            </div>
+            <span id="trafficSummary" class="muted">—</span>
+          </div>
+          <div class="chart-wrap">
+            <canvas id="trafficCanvas"></canvas>
+            <div id="trafficEmpty" class="chart-empty" hidden></div>
+          </div>
+        </section>
 
-    <section class="panel nodes-panel">
-      <div class="panel-head compact">
-        <div><h2>Nodes</h2><p>Per-node final metrics when available; accumulated counters otherwise.</p></div>
-        <input id="nodeSearch" placeholder="Filter nodes…">
-      </div>
-      <div class="node-table-wrap">
-        <table>
-          <thead><tr><th>Node</th><th>Role</th><th>TX</th><th>RX</th><th>Drops</th><th>Bits TX</th><th>Energy TX</th></tr></thead>
-          <tbody id="nodeRows"></tbody>
-        </table>
+        <section id="eventsPanel" class="tab-panel events-panel" role="tabpanel" aria-labelledby="tab-events" hidden>
+          <div class="section-intro section-intro-spaced">
+            <div>
+              <h3>Event stream</h3>
+              <p>Packet and protocol events around the displayed experiment time.</p>
+            </div>
+            <label class="field inline compact-field">Filter
+              <select id="eventFilter">
+                <option value="all">All events</option>
+                <option value="transmit">Transmit</option>
+                <option value="receive">Receive</option>
+                <option value="delivery_drop">Drops</option>
+                <option value="protocol">Protocol</option>
+              </select>
+            </label>
+          </div>
+          <div class="event-table-wrap">
+            <table>
+              <thead><tr><th>Time</th><th>Event</th><th>From</th><th>To</th><th>Type / Seq</th><th>Link</th></tr></thead>
+              <tbody id="eventRows"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section id="nodesPanel" class="tab-panel nodes-panel" role="tabpanel" aria-labelledby="tab-nodes" hidden>
+          <div class="section-intro section-intro-spaced">
+            <div>
+              <h3>Nodes</h3>
+              <p>Per-node final metrics when available; accumulated counters otherwise.</p>
+            </div>
+            <label class="field inline compact-field">Find node
+              <input id="nodeSearch" placeholder="Filter nodes…">
+            </label>
+          </div>
+          <div class="node-table-wrap">
+            <table>
+              <thead><tr><th>Node</th><th>Role</th><th>TX</th><th>RX</th><th>Drops</th><th>Bits TX</th><th>Energy TX</th></tr></thead>
+              <tbody id="nodeRows"></tbody>
+            </table>
+          </div>
+        </section>
       </div>
     </section>
   </main>
 
-  <footer>Read-only visualization. Mobility trace playback never calls or clocks the protocol.</footer>
+  <footer><span>CLIVE / FLAME EXPERIMENT OBSERVATORY</span><span>Observation only · Reachability is not routing · No protocol timers are advanced by this view</span></footer>
   <script src="/app.js"></script>
 </body>
 </html>
