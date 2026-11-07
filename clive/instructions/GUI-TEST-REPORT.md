@@ -19,7 +19,7 @@ A local browser-based controller was added without changing CLIVE's emulated rad
 | Partial sensor fragment does not promote membership | **Passed** |
 | Unknown sensor does not become associated | **Passed** |
 | Real CLIVE one-sample, one-CH/one-SN test | **1 observation accepted, 0 rejected** |
-| Real CLIVE 2-CH/2-SN MNIST/PyTorch scenario (`flame_mnist_small.json`) | **Passed, complete run** |
+| Real CLIVE 2-CH/2-SN MNIST/PyTorch scenario (`flame-mnist-pytorch-training-2ch-2sn.json`) | **Passed, complete run** |
 
 ### Real MNIST run
 

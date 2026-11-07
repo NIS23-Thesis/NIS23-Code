@@ -40,7 +40,7 @@ In **Experiment Studio → Diagnostics** enable:
 
 These debug logs consume disk I/O and space, particularly at 20 CH + 200 SN. Leave them disabled for clean performance benchmarks unless per-event visualization is needed. When they are off, the visualizer clearly reports that observed relationships are **unknown**, never fabricating a topology.
 
-A ready-made example with both enabled is `clive/configs/demos/visualizer_diagnostic_demo.json` (2 CH + 4 SN, synthetic samples, mean-pixel trainer). It is a **diagnostic**, not an ML-accuracy scenario.
+A ready-made example with both enabled is `clive/configs/demos/diagnostic-event-stream-synthetic-2ch-4sn.json` (2 CH + 4 SN, synthetic samples, mean-pixel trainer). It is a **diagnostic**, not an ML-accuracy scenario.
 
 ## Verification
 

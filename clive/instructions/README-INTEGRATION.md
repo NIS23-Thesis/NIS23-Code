@@ -28,12 +28,12 @@ Use the bundled MNIST archive at `mnist/mnist.npz` (part of the uploaded source 
 
 ```bash
 cd clive
-python3 clive.py --scenario configs/demos/flame_mnist_small.json --results results
+python3 clive.py --scenario configs/demos/flame-mnist-pytorch-training-2ch-2sn.json --results results
 ```
 
 This uses **real 785-byte MNIST samples** (784 grayscale pixels + one label), a **784→128→10 PyTorch MLP**, PyTorch local training on Cluster Heads, pickled model state exchange through genuine FLAME `MODEL_UPDATE` packets, 1,024-byte fragmentation, sliding-window acknowledgments, and buffered FL aggregation.
 
-`flame_mnist_small.json` is a **short functional integration example**, not a research-quality experiment and not a reproduction of the official WAFL GitHub repository. The training code is exactly the `MNISTTrainer` provided in the user-supplied FLAME validation ZIP, not the official WAFL implementation. Its optimizer/network follow the supplied trainer code.
+`flame-mnist-pytorch-training-2ch-2sn.json` is a **short functional integration example**, not a research-quality experiment and not a reproduction of the official WAFL GitHub repository. The training code is exactly the `MNISTTrainer` provided in the user-supplied FLAME validation ZIP, not the official WAFL implementation. Its optimizer/network follow the supplied trainer code.
 
 ## Normal experiments
 
@@ -41,7 +41,7 @@ The FLAME adapter can be used with CLIVE v2's regular scenarios, including mobil
 
 ```bash
 cd clive
-python3 clive.py --scenario configs/demos/gauss_markov_random_pause.json --results results
+python3 clive.py --scenario configs/demos/mobility-gauss-markov-random-pauses-2ch-9sn.json --results results
 ```
 
 A standalone CLIVE v2 configuration without a `flame` section uses the default FLAME timing: 5 seconds between CH HELLO broadcasts, 30 seconds between SN samples. A shorter scenario may finish before any sensor sampling; override the timings in its optional `flame` block if that is not intended.

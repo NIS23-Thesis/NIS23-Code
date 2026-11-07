@@ -1,0 +1,31 @@
+{
+  "source_archive": "NIS23-Code-integration(1).zip",
+  "files_count": 25,
+  "sha256_by_flame_relative_path": {
+    "communication/__init__.py": "57f2749f0c2bc53a7b5f788a128644d54bb8cd767b271dffe2ce4132ffc67865",
+    "communication/communication_module.py": "91ca0d700f556a76d8b9fd2bcab85842acda16197e35eb4e8b2d091ae41637e9",
+    "communication/datagram_buffer.py": "0ea8c8672035dd5d1fca649185a2c0c32146def7a9f3a4c425884e0e5f21473b",
+    "communication/file_manifest.py": "810c35cbad1daa825588d3858dc7a849e7e84de0a977611d0b5758f89e22e2c0",
+    "communication/message.py": "d95271e281340ad739f638b09fe5cc1a10b88b1a24566254957717a7556d305a",
+    "communication/parser.py": "a700424539a12cc1ffe286d81fa433034426dd913e3a07d91b6df33c13539ad0",
+    "communication/reliability.py": "c2ba39fe21bfc9c132b395fd60942a7c76355ed0a15e96b34bb8b6465ee203d8",
+    "communication/socket_interface.py": "64cb2841f48ee81927a985694476b93e36ac0a5c4aa96b4eea703bf3d56a633b",
+    "federated_learning/__init__.py": "3ba1a1b2bb310409a486f5cfe7202ecdea6368867648a059be3987e7d2fbc9f4",
+    "federated_learning/aggregation.py": "8609c59c2eab37b4c0b1f2dd7fd95d0c3cd08132f038afa118358475c89cbe5c",
+    "federated_learning/dataset_manager.py": "5f8a7e14e09e77a113895eef45059fd57d205bc52619a36b1e9ee02e452680b4",
+    "federated_learning/dataset_storage.py": "7bb71c2be061af027ed8146db051f3677ac1f1b563619f7e7cf5f958af5f4d20",
+    "federated_learning/mnist_trainer.py": "ba0eb41d3cadda3e36f99f1341a9cee2d849efdafb48258973fb0719e8e4d5a6",
+    "federated_learning/model_manager.py": "587cbe216fb4a73be2ea207385bae2cc26a22bcadb4ee465b76b0931982aec69",
+    "federated_learning/module.py": "e1a2a755a29d1a663a592d7fd50248d4248c31412eb50307c92aed2282c6ecef",
+    "federated_learning/trainer.py": "b3ffab0e06ef48c9e538791ad8b9e1337ef0df376315890ad3cac32fd31e3c1f",
+    "initialization/__init__.py": "6ff97fa2bfea8980ccb750fe71d77cd3cb909dfae269d3d671d6e8015e46513a",
+    "initialization/config.py": "d6e8f3ca2f3579ef822e42e527d054d555667e0570feae7461c6f3e2d77931e7",
+    "initialization/initialization_module.py": "e30aab878a3ba87c26303a0c96a0ac06bdd80ffbb2aa5fb73e9960055588a3ed",
+    "main.py": "1ad79fcafbb2c36be34d0b84ed0c605376cd3bf540c7ebc1e93d906fe049d316",
+    "neighbor/__init__.py": "60477b6eb77aca4d0f7df99f11e24f6fae4cfd727d231c6c625f24da00cf4f10",
+    "neighbor/neighbor_module.py": "45f15559371e5ea3505f254abe11e7c39cb08c586a3e687a7affda3d6e361720",
+    "sensing/__init__.py": "4a4b7c64e30398a2539259a0bf0ad2c6019320e7eab2d2891c97b6ed09b8b265",
+    "sensing/data_acquisition.py": "4fbfbda8f972e302b5eccd8abf62c61656d2627e39d5973a3cfed49dffdcbec6",
+    "sensing/sensing_module.py": "d31b47f71f3c63eb958be3cbbad7869ca0a91e96008c35ad1879bc96fa913110"
+  }
+}

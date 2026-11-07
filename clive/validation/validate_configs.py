@@ -10,7 +10,8 @@ from orchestrator import Orchestrator
 
 
 def main():
-    files = sorted((ROOT / "configs").rglob("*.json"))
+    files = sorted(path for path in (ROOT / "configs").rglob("*.json")
+                   if path.name not in {"manifest.json", "all_options.json"})
     if not files:
         raise SystemExit("no JSON configurations found")
     for path in files:

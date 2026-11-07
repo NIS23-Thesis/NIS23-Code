@@ -1,0 +1,68 @@
+{
+  "num_ch": 2,
+  "num_sn": 2,
+  "runtime": {
+    "duration_s": 20,
+    "seed": 810,
+    "startup_delay_s": 2,
+    "readiness_timeout_s": 90,
+    "start_tolerance_s": 0.75,
+    "io_poll_interval_s": 0.002
+  },
+  "logging": {
+    "protocol_events": true,
+    "packet_events": true
+  },
+  "link": {
+    "range_mode": "explicit",
+    "max_range_m": 60.0,
+    "max_data_rate_bps": 1000000000.0
+  },
+  "mobility": {
+    "model": "static",
+    "initial_topology": "manual",
+    "tick_interval": 0.5,
+    "area_width_m": 100,
+    "area_height_m": 100,
+    "topology_margin_m": 5,
+    "manual_positions": {
+      "CH-1": [
+        40,
+        40
+      ],
+      "CH-2": [
+        45,
+        45
+      ],
+      "SN-1": [
+        39,
+        40
+      ],
+      "SN-2": [
+        40,
+        41
+      ]
+    }
+  },
+  "flame": {
+    "sample_source": "mnist",
+    "trainer": "mnist",
+    "hello_interval_s": 0.8,
+    "sample_interval_s": 0.7,
+    "service_interval_s": 0.01,
+    "expected_observations": 2,
+    "training_threshold": 1.0,
+    "aggregation_threshold": 1,
+    "aggregation_learning_rate": 0.5,
+    "local_epochs": 1,
+    "ack_timeout": 0.5,
+    "mnist_samples_per_sensor": 100,
+    "track_learning": true,
+    "learning_eval_samples": 512,
+    "learning_eval_every_updates": 1,
+    "evaluate_accuracy": true,
+    "save_final_model": true,
+    "repeat_sensor_samples": false,
+    "model_retry_limit": 1
+  }
+}

@@ -53,7 +53,7 @@ def test_static_topologies():
 
     import json
     scenario_root = Path(__file__).resolve().parents[1] / "configs" / "demos"
-    strict_star = Orchestrator().prepare(json.loads((scenario_root / "static_star.json").read_text()))
+    strict_star = Orchestrator().prepare(json.loads((scenario_root / "topology-static-star-2ch-4sn.json").read_text()))
     pos = strict_star.trace[0]
     adjacency = {}
     for src in strict_star.nodes:
@@ -70,7 +70,7 @@ def test_static_topologies():
     check(set(adjacency["CH-2"]) == expected_leaves, "custom static_star center CH-2 reaches all five leaves")
     check(all(adjacency[name] == ["CH-2"] for name in expected_leaves), "custom static_star scenario is a true star connectivity graph")
 
-    strict_line = Orchestrator().prepare(json.loads((scenario_root / "static_line.json").read_text()))
+    strict_line = Orchestrator().prepare(json.loads((scenario_root / "topology-static-line-1ch-5sn.json").read_text()))
     pos = strict_line.trace[0]
     degrees = []
     for src in strict_line.nodes:
@@ -87,7 +87,7 @@ def test_static_topologies():
     ordered_names = [name for name, _ in sorted(strict_line.trace[0].items(), key=lambda item: item[1][0])]
     check(ordered_names == ["SN-5", "SN-4", "SN-3", "CH-1", "SN-2", "SN-1"], "line topology honors explicit node_order")
 
-    manual = Orchestrator().prepare(json.loads((scenario_root / "static_manual.json").read_text()))
+    manual = Orchestrator().prepare(json.loads((scenario_root / "topology-static-manual-2ch-4sn.json").read_text()))
     check(manual.trace[0]["CH-1"] == [60.0, 150.0] and manual.trace[0]["SN-4"] == [150.0, 220.0], "manual topology honors exact user coordinates")
 
 

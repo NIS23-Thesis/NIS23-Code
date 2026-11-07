@@ -1,0 +1,988 @@
+{
+  "source": "Thesis November 4, 2026 Chapter 4.7, Tables 4-6 through 4-10",
+  "cases": 108,
+  "seeds": [
+    810
+  ],
+  "run_status": "generated_not_executed",
+  "caveats": [
+    "Every case loads actual MNIST and runs PyTorch, potentially using substantial RAM.",
+    "Pause initiation [10,30] s and GM alpha=.5 are emulation assumptions, not prescribed by the thesis.",
+    "Class assignment is a fixed ten-region spatial clustering approximation.",
+    "Actual FLAME reliability defects are outside the scope of CLIVE adapter repairs."
+  ],
+  "scenarios": [
+    {
+      "case_id": "m-none_d-low_f-low_a-small",
+      "scenario_file": "m-none_d-low_f-low_a-small.json",
+      "mobility": "none",
+      "density": "low",
+      "frequency": "low",
+      "area": "small",
+      "seed": 810
+    },
+    {
+      "case_id": "m-none_d-low_f-low_a-medium",
+      "scenario_file": "m-none_d-low_f-low_a-medium.json",
+      "mobility": "none",
+      "density": "low",
+      "frequency": "low",
+      "area": "medium",
+      "seed": 810
+    },
+    {
+      "case_id": "m-none_d-low_f-low_a-large",
+      "scenario_file": "m-none_d-low_f-low_a-large.json",
+      "mobility": "none",
+      "density": "low",
+      "frequency": "low",
+      "area": "large",
+      "seed": 810
+    },
+    {
+      "case_id": "m-none_d-low_f-medium_a-small",
+      "scenario_file": "m-none_d-low_f-medium_a-small.json",
+      "mobility": "none",
+      "density": "low",
+      "frequency": "medium",
+      "area": "small",
+      "seed": 810
+    },
+    {
+      "case_id": "m-none_d-low_f-medium_a-medium",
+      "scenario_file": "m-none_d-low_f-medium_a-medium.json",
+      "mobility": "none",
+      "density": "low",
+      "frequency": "medium",
+      "area": "medium",
+      "seed": 810
+    },
+    {
+      "case_id": "m-none_d-low_f-medium_a-large",
+      "scenario_file": "m-none_d-low_f-medium_a-large.json",
+      "mobility": "none",
+      "density": "low",
+      "frequency": "medium",
+      "area": "large",
+      "seed": 810
+    },
+    {
+      "case_id": "m-none_d-low_f-high_a-small",
+      "scenario_file": "m-none_d-low_f-high_a-small.json",
+      "mobility": "none",
+      "density": "low",
+      "frequency": "high",
+      "area": "small",
+      "seed": 810
+    },
+    {
+      "case_id": "m-none_d-low_f-high_a-medium",
+      "scenario_file": "m-none_d-low_f-high_a-medium.json",
+      "mobility": "none",
+      "density": "low",
+      "frequency": "high",
+      "area": "medium",
+      "seed": 810
+    },
+    {
+      "case_id": "m-none_d-low_f-high_a-large",
+      "scenario_file": "m-none_d-low_f-high_a-large.json",
+      "mobility": "none",
+      "density": "low",
+      "frequency": "high",
+      "area": "large",
+      "seed": 810
+    },
+    {
+      "case_id": "m-none_d-medium_f-low_a-small",
+      "scenario_file": "m-none_d-medium_f-low_a-small.json",
+      "mobility": "none",
+      "density": "medium",
+      "frequency": "low",
+      "area": "small",
+      "seed": 810
+    },
+    {
+      "case_id": "m-none_d-medium_f-low_a-medium",
+      "scenario_file": "m-none_d-medium_f-low_a-medium.json",
+      "mobility": "none",
+      "density": "medium",
+      "frequency": "low",
+      "area": "medium",
+      "seed": 810
+    },
+    {
+      "case_id": "m-none_d-medium_f-low_a-large",
+      "scenario_file": "m-none_d-medium_f-low_a-large.json",
+      "mobility": "none",
+      "density": "medium",
+      "frequency": "low",
+      "area": "large",
+      "seed": 810
+    },
+    {
+      "case_id": "m-none_d-medium_f-medium_a-small",
+      "scenario_file": "m-none_d-medium_f-medium_a-small.json",
+      "mobility": "none",
+      "density": "medium",
+      "frequency": "medium",
+      "area": "small",
+      "seed": 810
+    },
+    {
+      "case_id": "m-none_d-medium_f-medium_a-medium",
+      "scenario_file": "m-none_d-medium_f-medium_a-medium.json",
+      "mobility": "none",
+      "density": "medium",
+      "frequency": "medium",
+      "area": "medium",
+      "seed": 810
+    },
+    {
+      "case_id": "m-none_d-medium_f-medium_a-large",
+      "scenario_file": "m-none_d-medium_f-medium_a-large.json",
+      "mobility": "none",
+      "density": "medium",
+      "frequency": "medium",
+      "area": "large",
+      "seed": 810
+    },
+    {
+      "case_id": "m-none_d-medium_f-high_a-small",
+      "scenario_file": "m-none_d-medium_f-high_a-small.json",
+      "mobility": "none",
+      "density": "medium",
+      "frequency": "high",
+      "area": "small",
+      "seed": 810
+    },
+    {
+      "case_id": "m-none_d-medium_f-high_a-medium",
+      "scenario_file": "m-none_d-medium_f-high_a-medium.json",
+      "mobility": "none",
+      "density": "medium",
+      "frequency": "high",
+      "area": "medium",
+      "seed": 810
+    },
+    {
+      "case_id": "m-none_d-medium_f-high_a-large",
+      "scenario_file": "m-none_d-medium_f-high_a-large.json",
+      "mobility": "none",
+      "density": "medium",
+      "frequency": "high",
+      "area": "large",
+      "seed": 810
+    },
+    {
+      "case_id": "m-none_d-high_f-low_a-small",
+      "scenario_file": "m-none_d-high_f-low_a-small.json",
+      "mobility": "none",
+      "density": "high",
+      "frequency": "low",
+      "area": "small",
+      "seed": 810
+    },
+    {
+      "case_id": "m-none_d-high_f-low_a-medium",
+      "scenario_file": "m-none_d-high_f-low_a-medium.json",
+      "mobility": "none",
+      "density": "high",
+      "frequency": "low",
+      "area": "medium",
+      "seed": 810
+    },
+    {
+      "case_id": "m-none_d-high_f-low_a-large",
+      "scenario_file": "m-none_d-high_f-low_a-large.json",
+      "mobility": "none",
+      "density": "high",
+      "frequency": "low",
+      "area": "large",
+      "seed": 810
+    },
+    {
+      "case_id": "m-none_d-high_f-medium_a-small",
+      "scenario_file": "m-none_d-high_f-medium_a-small.json",
+      "mobility": "none",
+      "density": "high",
+      "frequency": "medium",
+      "area": "small",
+      "seed": 810
+    },
+    {
+      "case_id": "m-none_d-high_f-medium_a-medium",
+      "scenario_file": "m-none_d-high_f-medium_a-medium.json",
+      "mobility": "none",
+      "density": "high",
+      "frequency": "medium",
+      "area": "medium",
+      "seed": 810
+    },
+    {
+      "case_id": "m-none_d-high_f-medium_a-large",
+      "scenario_file": "m-none_d-high_f-medium_a-large.json",
+      "mobility": "none",
+      "density": "high",
+      "frequency": "medium",
+      "area": "large",
+      "seed": 810
+    },
+    {
+      "case_id": "m-none_d-high_f-high_a-small",
+      "scenario_file": "m-none_d-high_f-high_a-small.json",
+      "mobility": "none",
+      "density": "high",
+      "frequency": "high",
+      "area": "small",
+      "seed": 810
+    },
+    {
+      "case_id": "m-none_d-high_f-high_a-medium",
+      "scenario_file": "m-none_d-high_f-high_a-medium.json",
+      "mobility": "none",
+      "density": "high",
+      "frequency": "high",
+      "area": "medium",
+      "seed": 810
+    },
+    {
+      "case_id": "m-none_d-high_f-high_a-large",
+      "scenario_file": "m-none_d-high_f-high_a-large.json",
+      "mobility": "none",
+      "density": "high",
+      "frequency": "high",
+      "area": "large",
+      "seed": 810
+    },
+    {
+      "case_id": "m-low_d-low_f-low_a-small",
+      "scenario_file": "m-low_d-low_f-low_a-small.json",
+      "mobility": "low",
+      "density": "low",
+      "frequency": "low",
+      "area": "small",
+      "seed": 810
+    },
+    {
+      "case_id": "m-low_d-low_f-low_a-medium",
+      "scenario_file": "m-low_d-low_f-low_a-medium.json",
+      "mobility": "low",
+      "density": "low",
+      "frequency": "low",
+      "area": "medium",
+      "seed": 810
+    },
+    {
+      "case_id": "m-low_d-low_f-low_a-large",
+      "scenario_file": "m-low_d-low_f-low_a-large.json",
+      "mobility": "low",
+      "density": "low",
+      "frequency": "low",
+      "area": "large",
+      "seed": 810
+    },
+    {
+      "case_id": "m-low_d-low_f-medium_a-small",
+      "scenario_file": "m-low_d-low_f-medium_a-small.json",
+      "mobility": "low",
+      "density": "low",
+      "frequency": "medium",
+      "area": "small",
+      "seed": 810
+    },
+    {
+      "case_id": "m-low_d-low_f-medium_a-medium",
+      "scenario_file": "m-low_d-low_f-medium_a-medium.json",
+      "mobility": "low",
+      "density": "low",
+      "frequency": "medium",
+      "area": "medium",
+      "seed": 810
+    },
+    {
+      "case_id": "m-low_d-low_f-medium_a-large",
+      "scenario_file": "m-low_d-low_f-medium_a-large.json",
+      "mobility": "low",
+      "density": "low",
+      "frequency": "medium",
+      "area": "large",
+      "seed": 810
+    },
+    {
+      "case_id": "m-low_d-low_f-high_a-small",
+      "scenario_file": "m-low_d-low_f-high_a-small.json",
+      "mobility": "low",
+      "density": "low",
+      "frequency": "high",
+      "area": "small",
+      "seed": 810
+    },
+    {
+      "case_id": "m-low_d-low_f-high_a-medium",
+      "scenario_file": "m-low_d-low_f-high_a-medium.json",
+      "mobility": "low",
+      "density": "low",
+      "frequency": "high",
+      "area": "medium",
+      "seed": 810
+    },
+    {
+      "case_id": "m-low_d-low_f-high_a-large",
+      "scenario_file": "m-low_d-low_f-high_a-large.json",
+      "mobility": "low",
+      "density": "low",
+      "frequency": "high",
+      "area": "large",
+      "seed": 810
+    },
+    {
+      "case_id": "m-low_d-medium_f-low_a-small",
+      "scenario_file": "m-low_d-medium_f-low_a-small.json",
+      "mobility": "low",
+      "density": "medium",
+      "frequency": "low",
+      "area": "small",
+      "seed": 810
+    },
+    {
+      "case_id": "m-low_d-medium_f-low_a-medium",
+      "scenario_file": "m-low_d-medium_f-low_a-medium.json",
+      "mobility": "low",
+      "density": "medium",
+      "frequency": "low",
+      "area": "medium",
+      "seed": 810
+    },
+    {
+      "case_id": "m-low_d-medium_f-low_a-large",
+      "scenario_file": "m-low_d-medium_f-low_a-large.json",
+      "mobility": "low",
+      "density": "medium",
+      "frequency": "low",
+      "area": "large",
+      "seed": 810
+    },
+    {
+      "case_id": "m-low_d-medium_f-medium_a-small",
+      "scenario_file": "m-low_d-medium_f-medium_a-small.json",
+      "mobility": "low",
+      "density": "medium",
+      "frequency": "medium",
+      "area": "small",
+      "seed": 810
+    },
+    {
+      "case_id": "m-low_d-medium_f-medium_a-medium",
+      "scenario_file": "m-low_d-medium_f-medium_a-medium.json",
+      "mobility": "low",
+      "density": "medium",
+      "frequency": "medium",
+      "area": "medium",
+      "seed": 810
+    },
+    {
+      "case_id": "m-low_d-medium_f-medium_a-large",
+      "scenario_file": "m-low_d-medium_f-medium_a-large.json",
+      "mobility": "low",
+      "density": "medium",
+      "frequency": "medium",
+      "area": "large",
+      "seed": 810
+    },
+    {
+      "case_id": "m-low_d-medium_f-high_a-small",
+      "scenario_file": "m-low_d-medium_f-high_a-small.json",
+      "mobility": "low",
+      "density": "medium",
+      "frequency": "high",
+      "area": "small",
+      "seed": 810
+    },
+    {
+      "case_id": "m-low_d-medium_f-high_a-medium",
+      "scenario_file": "m-low_d-medium_f-high_a-medium.json",
+      "mobility": "low",
+      "density": "medium",
+      "frequency": "high",
+      "area": "medium",
+      "seed": 810
+    },
+    {
+      "case_id": "m-low_d-medium_f-high_a-large",
+      "scenario_file": "m-low_d-medium_f-high_a-large.json",
+      "mobility": "low",
+      "density": "medium",
+      "frequency": "high",
+      "area": "large",
+      "seed": 810
+    },
+    {
+      "case_id": "m-low_d-high_f-low_a-small",
+      "scenario_file": "m-low_d-high_f-low_a-small.json",
+      "mobility": "low",
+      "density": "high",
+      "frequency": "low",
+      "area": "small",
+      "seed": 810
+    },
+    {
+      "case_id": "m-low_d-high_f-low_a-medium",
+      "scenario_file": "m-low_d-high_f-low_a-medium.json",
+      "mobility": "low",
+      "density": "high",
+      "frequency": "low",
+      "area": "medium",
+      "seed": 810
+    },
+    {
+      "case_id": "m-low_d-high_f-low_a-large",
+      "scenario_file": "m-low_d-high_f-low_a-large.json",
+      "mobility": "low",
+      "density": "high",
+      "frequency": "low",
+      "area": "large",
+      "seed": 810
+    },
+    {
+      "case_id": "m-low_d-high_f-medium_a-small",
+      "scenario_file": "m-low_d-high_f-medium_a-small.json",
+      "mobility": "low",
+      "density": "high",
+      "frequency": "medium",
+      "area": "small",
+      "seed": 810
+    },
+    {
+      "case_id": "m-low_d-high_f-medium_a-medium",
+      "scenario_file": "m-low_d-high_f-medium_a-medium.json",
+      "mobility": "low",
+      "density": "high",
+      "frequency": "medium",
+      "area": "medium",
+      "seed": 810
+    },
+    {
+      "case_id": "m-low_d-high_f-medium_a-large",
+      "scenario_file": "m-low_d-high_f-medium_a-large.json",
+      "mobility": "low",
+      "density": "high",
+      "frequency": "medium",
+      "area": "large",
+      "seed": 810
+    },
+    {
+      "case_id": "m-low_d-high_f-high_a-small",
+      "scenario_file": "m-low_d-high_f-high_a-small.json",
+      "mobility": "low",
+      "density": "high",
+      "frequency": "high",
+      "area": "small",
+      "seed": 810
+    },
+    {
+      "case_id": "m-low_d-high_f-high_a-medium",
+      "scenario_file": "m-low_d-high_f-high_a-medium.json",
+      "mobility": "low",
+      "density": "high",
+      "frequency": "high",
+      "area": "medium",
+      "seed": 810
+    },
+    {
+      "case_id": "m-low_d-high_f-high_a-large",
+      "scenario_file": "m-low_d-high_f-high_a-large.json",
+      "mobility": "low",
+      "density": "high",
+      "frequency": "high",
+      "area": "large",
+      "seed": 810
+    },
+    {
+      "case_id": "m-medium_d-low_f-low_a-small",
+      "scenario_file": "m-medium_d-low_f-low_a-small.json",
+      "mobility": "medium",
+      "density": "low",
+      "frequency": "low",
+      "area": "small",
+      "seed": 810
+    },
+    {
+      "case_id": "m-medium_d-low_f-low_a-medium",
+      "scenario_file": "m-medium_d-low_f-low_a-medium.json",
+      "mobility": "medium",
+      "density": "low",
+      "frequency": "low",
+      "area": "medium",
+      "seed": 810
+    },
+    {
+      "case_id": "m-medium_d-low_f-low_a-large",
+      "scenario_file": "m-medium_d-low_f-low_a-large.json",
+      "mobility": "medium",
+      "density": "low",
+      "frequency": "low",
+      "area": "large",
+      "seed": 810
+    },
+    {
+      "case_id": "m-medium_d-low_f-medium_a-small",
+      "scenario_file": "m-medium_d-low_f-medium_a-small.json",
+      "mobility": "medium",
+      "density": "low",
+      "frequency": "medium",
+      "area": "small",
+      "seed": 810
+    },
+    {
+      "case_id": "m-medium_d-low_f-medium_a-medium",
+      "scenario_file": "m-medium_d-low_f-medium_a-medium.json",
+      "mobility": "medium",
+      "density": "low",
+      "frequency": "medium",
+      "area": "medium",
+      "seed": 810
+    },
+    {
+      "case_id": "m-medium_d-low_f-medium_a-large",
+      "scenario_file": "m-medium_d-low_f-medium_a-large.json",
+      "mobility": "medium",
+      "density": "low",
+      "frequency": "medium",
+      "area": "large",
+      "seed": 810
+    },
+    {
+      "case_id": "m-medium_d-low_f-high_a-small",
+      "scenario_file": "m-medium_d-low_f-high_a-small.json",
+      "mobility": "medium",
+      "density": "low",
+      "frequency": "high",
+      "area": "small",
+      "seed": 810
+    },
+    {
+      "case_id": "m-medium_d-low_f-high_a-medium",
+      "scenario_file": "m-medium_d-low_f-high_a-medium.json",
+      "mobility": "medium",
+      "density": "low",
+      "frequency": "high",
+      "area": "medium",
+      "seed": 810
+    },
+    {
+      "case_id": "m-medium_d-low_f-high_a-large",
+      "scenario_file": "m-medium_d-low_f-high_a-large.json",
+      "mobility": "medium",
+      "density": "low",
+      "frequency": "high",
+      "area": "large",
+      "seed": 810
+    },
+    {
+      "case_id": "m-medium_d-medium_f-low_a-small",
+      "scenario_file": "m-medium_d-medium_f-low_a-small.json",
+      "mobility": "medium",
+      "density": "medium",
+      "frequency": "low",
+      "area": "small",
+      "seed": 810
+    },
+    {
+      "case_id": "m-medium_d-medium_f-low_a-medium",
+      "scenario_file": "m-medium_d-medium_f-low_a-medium.json",
+      "mobility": "medium",
+      "density": "medium",
+      "frequency": "low",
+      "area": "medium",
+      "seed": 810
+    },
+    {
+      "case_id": "m-medium_d-medium_f-low_a-large",
+      "scenario_file": "m-medium_d-medium_f-low_a-large.json",
+      "mobility": "medium",
+      "density": "medium",
+      "frequency": "low",
+      "area": "large",
+      "seed": 810
+    },
+    {
+      "case_id": "m-medium_d-medium_f-medium_a-small",
+      "scenario_file": "m-medium_d-medium_f-medium_a-small.json",
+      "mobility": "medium",
+      "density": "medium",
+      "frequency": "medium",
+      "area": "small",
+      "seed": 810
+    },
+    {
+      "case_id": "m-medium_d-medium_f-medium_a-medium",
+      "scenario_file": "m-medium_d-medium_f-medium_a-medium.json",
+      "mobility": "medium",
+      "density": "medium",
+      "frequency": "medium",
+      "area": "medium",
+      "seed": 810
+    },
+    {
+      "case_id": "m-medium_d-medium_f-medium_a-large",
+      "scenario_file": "m-medium_d-medium_f-medium_a-large.json",
+      "mobility": "medium",
+      "density": "medium",
+      "frequency": "medium",
+      "area": "large",
+      "seed": 810
+    },
+    {
+      "case_id": "m-medium_d-medium_f-high_a-small",
+      "scenario_file": "m-medium_d-medium_f-high_a-small.json",
+      "mobility": "medium",
+      "density": "medium",
+      "frequency": "high",
+      "area": "small",
+      "seed": 810
+    },
+    {
+      "case_id": "m-medium_d-medium_f-high_a-medium",
+      "scenario_file": "m-medium_d-medium_f-high_a-medium.json",
+      "mobility": "medium",
+      "density": "medium",
+      "frequency": "high",
+      "area": "medium",
+      "seed": 810
+    },
+    {
+      "case_id": "m-medium_d-medium_f-high_a-large",
+      "scenario_file": "m-medium_d-medium_f-high_a-large.json",
+      "mobility": "medium",
+      "density": "medium",
+      "frequency": "high",
+      "area": "large",
+      "seed": 810
+    },
+    {
+      "case_id": "m-medium_d-high_f-low_a-small",
+      "scenario_file": "m-medium_d-high_f-low_a-small.json",
+      "mobility": "medium",
+      "density": "high",
+      "frequency": "low",
+      "area": "small",
+      "seed": 810
+    },
+    {
+      "case_id": "m-medium_d-high_f-low_a-medium",
+      "scenario_file": "m-medium_d-high_f-low_a-medium.json",
+      "mobility": "medium",
+      "density": "high",
+      "frequency": "low",
+      "area": "medium",
+      "seed": 810
+    },
+    {
+      "case_id": "m-medium_d-high_f-low_a-large",
+      "scenario_file": "m-medium_d-high_f-low_a-large.json",
+      "mobility": "medium",
+      "density": "high",
+      "frequency": "low",
+      "area": "large",
+      "seed": 810
+    },
+    {
+      "case_id": "m-medium_d-high_f-medium_a-small",
+      "scenario_file": "m-medium_d-high_f-medium_a-small.json",
+      "mobility": "medium",
+      "density": "high",
+      "frequency": "medium",
+      "area": "small",
+      "seed": 810
+    },
+    {
+      "case_id": "m-medium_d-high_f-medium_a-medium",
+      "scenario_file": "m-medium_d-high_f-medium_a-medium.json",
+      "mobility": "medium",
+      "density": "high",
+      "frequency": "medium",
+      "area": "medium",
+      "seed": 810
+    },
+    {
+      "case_id": "m-medium_d-high_f-medium_a-large",
+      "scenario_file": "m-medium_d-high_f-medium_a-large.json",
+      "mobility": "medium",
+      "density": "high",
+      "frequency": "medium",
+      "area": "large",
+      "seed": 810
+    },
+    {
+      "case_id": "m-medium_d-high_f-high_a-small",
+      "scenario_file": "m-medium_d-high_f-high_a-small.json",
+      "mobility": "medium",
+      "density": "high",
+      "frequency": "high",
+      "area": "small",
+      "seed": 810
+    },
+    {
+      "case_id": "m-medium_d-high_f-high_a-medium",
+      "scenario_file": "m-medium_d-high_f-high_a-medium.json",
+      "mobility": "medium",
+      "density": "high",
+      "frequency": "high",
+      "area": "medium",
+      "seed": 810
+    },
+    {
+      "case_id": "m-medium_d-high_f-high_a-large",
+      "scenario_file": "m-medium_d-high_f-high_a-large.json",
+      "mobility": "medium",
+      "density": "high",
+      "frequency": "high",
+      "area": "large",
+      "seed": 810
+    },
+    {
+      "case_id": "m-high_d-low_f-low_a-small",
+      "scenario_file": "m-high_d-low_f-low_a-small.json",
+      "mobility": "high",
+      "density": "low",
+      "frequency": "low",
+      "area": "small",
+      "seed": 810
+    },
+    {
+      "case_id": "m-high_d-low_f-low_a-medium",
+      "scenario_file": "m-high_d-low_f-low_a-medium.json",
+      "mobility": "high",
+      "density": "low",
+      "frequency": "low",
+      "area": "medium",
+      "seed": 810
+    },
+    {
+      "case_id": "m-high_d-low_f-low_a-large",
+      "scenario_file": "m-high_d-low_f-low_a-large.json",
+      "mobility": "high",
+      "density": "low",
+      "frequency": "low",
+      "area": "large",
+      "seed": 810
+    },
+    {
+      "case_id": "m-high_d-low_f-medium_a-small",
+      "scenario_file": "m-high_d-low_f-medium_a-small.json",
+      "mobility": "high",
+      "density": "low",
+      "frequency": "medium",
+      "area": "small",
+      "seed": 810
+    },
+    {
+      "case_id": "m-high_d-low_f-medium_a-medium",
+      "scenario_file": "m-high_d-low_f-medium_a-medium.json",
+      "mobility": "high",
+      "density": "low",
+      "frequency": "medium",
+      "area": "medium",
+      "seed": 810
+    },
+    {
+      "case_id": "m-high_d-low_f-medium_a-large",
+      "scenario_file": "m-high_d-low_f-medium_a-large.json",
+      "mobility": "high",
+      "density": "low",
+      "frequency": "medium",
+      "area": "large",
+      "seed": 810
+    },
+    {
+      "case_id": "m-high_d-low_f-high_a-small",
+      "scenario_file": "m-high_d-low_f-high_a-small.json",
+      "mobility": "high",
+      "density": "low",
+      "frequency": "high",
+      "area": "small",
+      "seed": 810
+    },
+    {
+      "case_id": "m-high_d-low_f-high_a-medium",
+      "scenario_file": "m-high_d-low_f-high_a-medium.json",
+      "mobility": "high",
+      "density": "low",
+      "frequency": "high",
+      "area": "medium",
+      "seed": 810
+    },
+    {
+      "case_id": "m-high_d-low_f-high_a-large",
+      "scenario_file": "m-high_d-low_f-high_a-large.json",
+      "mobility": "high",
+      "density": "low",
+      "frequency": "high",
+      "area": "large",
+      "seed": 810
+    },
+    {
+      "case_id": "m-high_d-medium_f-low_a-small",
+      "scenario_file": "m-high_d-medium_f-low_a-small.json",
+      "mobility": "high",
+      "density": "medium",
+      "frequency": "low",
+      "area": "small",
+      "seed": 810
+    },
+    {
+      "case_id": "m-high_d-medium_f-low_a-medium",
+      "scenario_file": "m-high_d-medium_f-low_a-medium.json",
+      "mobility": "high",
+      "density": "medium",
+      "frequency": "low",
+      "area": "medium",
+      "seed": 810
+    },
+    {
+      "case_id": "m-high_d-medium_f-low_a-large",
+      "scenario_file": "m-high_d-medium_f-low_a-large.json",
+      "mobility": "high",
+      "density": "medium",
+      "frequency": "low",
+      "area": "large",
+      "seed": 810
+    },
+    {
+      "case_id": "m-high_d-medium_f-medium_a-small",
+      "scenario_file": "m-high_d-medium_f-medium_a-small.json",
+      "mobility": "high",
+      "density": "medium",
+      "frequency": "medium",
+      "area": "small",
+      "seed": 810
+    },
+    {
+      "case_id": "m-high_d-medium_f-medium_a-medium",
+      "scenario_file": "m-high_d-medium_f-medium_a-medium.json",
+      "mobility": "high",
+      "density": "medium",
+      "frequency": "medium",
+      "area": "medium",
+      "seed": 810
+    },
+    {
+      "case_id": "m-high_d-medium_f-medium_a-large",
+      "scenario_file": "m-high_d-medium_f-medium_a-large.json",
+      "mobility": "high",
+      "density": "medium",
+      "frequency": "medium",
+      "area": "large",
+      "seed": 810
+    },
+    {
+      "case_id": "m-high_d-medium_f-high_a-small",
+      "scenario_file": "m-high_d-medium_f-high_a-small.json",
+      "mobility": "high",
+      "density": "medium",
+      "frequency": "high",
+      "area": "small",
+      "seed": 810
+    },
+    {
+      "case_id": "m-high_d-medium_f-high_a-medium",
+      "scenario_file": "m-high_d-medium_f-high_a-medium.json",
+      "mobility": "high",
+      "density": "medium",
+      "frequency": "high",
+      "area": "medium",
+      "seed": 810
+    },
+    {
+      "case_id": "m-high_d-medium_f-high_a-large",
+      "scenario_file": "m-high_d-medium_f-high_a-large.json",
+      "mobility": "high",
+      "density": "medium",
+      "frequency": "high",
+      "area": "large",
+      "seed": 810
+    },
+    {
+      "case_id": "m-high_d-high_f-low_a-small",
+      "scenario_file": "m-high_d-high_f-low_a-small.json",
+      "mobility": "high",
+      "density": "high",
+      "frequency": "low",
+      "area": "small",
+      "seed": 810
+    },
+    {
+      "case_id": "m-high_d-high_f-low_a-medium",
+      "scenario_file": "m-high_d-high_f-low_a-medium.json",
+      "mobility": "high",
+      "density": "high",
+      "frequency": "low",
+      "area": "medium",
+      "seed": 810
+    },
+    {
+      "case_id": "m-high_d-high_f-low_a-large",
+      "scenario_file": "m-high_d-high_f-low_a-large.json",
+      "mobility": "high",
+      "density": "high",
+      "frequency": "low",
+      "area": "large",
+      "seed": 810
+    },
+    {
+      "case_id": "m-high_d-high_f-medium_a-small",
+      "scenario_file": "m-high_d-high_f-medium_a-small.json",
+      "mobility": "high",
+      "density": "high",
+      "frequency": "medium",
+      "area": "small",
+      "seed": 810
+    },
+    {
+      "case_id": "m-high_d-high_f-medium_a-medium",
+      "scenario_file": "m-high_d-high_f-medium_a-medium.json",
+      "mobility": "high",
+      "density": "high",
+      "frequency": "medium",
+      "area": "medium",
+      "seed": 810
+    },
+    {
+      "case_id": "m-high_d-high_f-medium_a-large",
+      "scenario_file": "m-high_d-high_f-medium_a-large.json",
+      "mobility": "high",
+      "density": "high",
+      "frequency": "medium",
+      "area": "large",
+      "seed": 810
+    },
+    {
+      "case_id": "m-high_d-high_f-high_a-small",
+      "scenario_file": "m-high_d-high_f-high_a-small.json",
+      "mobility": "high",
+      "density": "high",
+      "frequency": "high",
+      "area": "small",
+      "seed": 810
+    },
+    {
+      "case_id": "m-high_d-high_f-high_a-medium",
+      "scenario_file": "m-high_d-high_f-high_a-medium.json",
+      "mobility": "high",
+      "density": "high",
+      "frequency": "high",
+      "area": "medium",
+      "seed": 810
+    },
+    {
+      "case_id": "m-high_d-high_f-high_a-large",
+      "scenario_file": "m-high_d-high_f-high_a-large.json",
+      "mobility": "high",
+      "density": "high",
+      "frequency": "high",
+      "area": "large",
+      "seed": 810
+    }
+  ]
+}

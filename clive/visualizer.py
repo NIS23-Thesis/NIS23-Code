@@ -11,7 +11,10 @@ It uses only Python's standard library. The browser frontend is plain JavaScript
 from __future__ import annotations
 
 import argparse
+import bisect
+import re
 import glob
+import heapq
 import json
 import math
 import os
@@ -76,6 +79,13 @@ class RunData:
         self._manifest_mtime_ns = None
         self._file_state = {}
         self._events = deque(maxlen=max_events)
+        # Sparse on-disk time indexes are independent of the bounded live packet cache.
+        # Historical playback must never go blank when a long run exceeds max_events.
+        self._window_index = {}
+        self._window_index_lock = threading.RLock()
+        # Per-bucket, append-only packet counters. The old deque contains only the
+        # latest 200k records and is not valid for whole-run traffic statistics.
+        self._timeline_caches = {}
         # Compact, time-indexed application relationships. Unlike radio links, these
         # are evidenced by FLAME protocol events and are never inferred from distance.
         self._relationships = deque(maxlen=50_000)
@@ -172,6 +182,7 @@ class RunData:
                 "runtime": plan.config.to_dict(),
                 "logging": plan.logging_config.to_dict(),
                 "protocol": manifest.get("protocol", "protocol_interface:NullProtocol"),
+                "flame": dict(plan.flame_settings),  # scenario workload/config, not live ML accuracy
                 "epoch_start": plan.epoch_start,
                 "trace_sha256": plan.trace_digest(),
                 "trace_storage": dict(plan.trace_storage or {}),
@@ -267,14 +278,18 @@ class RunData:
         except (TypeError, ValueError):
             return None
 
-    def _normalize_event(self, raw, filename, stream_type):
+    def _normalize_event(self, raw, filename, stream_type, *, assign_seq=True):
         event_type = raw.get("event") or raw.get("type") or "unknown"
         node_name = raw.get("node_name") or filename.split(".", 1)[0]
         time_s = _safe_float(raw.get("time_s"), -1.0)
         source_node = None
         target_node = None
 
-        if event_type in {"receive", "protocol_receive", "flame_sensor_received", "flame_model_received"}:
+        if event_type in {"receive", "protocol_receive", "flame_sensor_received", "flame_model_received",
+                          "flame_message_reassembled", "flame_unassociated_sensor_rejected",
+                          "flame_invalid_model_peer", "flame_member_expired",
+                          "flame_leave_observed", "flame_ch_discovered",
+                          "flame_join_pending_expired"}:
             source_node = self._node_from_address(raw.get("source"))
             target_node = node_name
         else:
@@ -285,19 +300,43 @@ class RunData:
                 if isinstance(destination, (list, tuple)) and destination and destination[0] != "255.255.255.255":
                     target_node = self._node_from_address(destination)
 
+        if event_type == "flame_aggregated" and raw.get("trigger_peer"):
+            source_node = self._node_from_address(raw.get("trigger_peer")) or node_name
+            target_node = node_name if source_node != node_name else None
+
         header = raw.get("common_header") or {}
         counters = raw.get("counters") if isinstance(raw.get("counters"), dict) else {}
+        # The event's ordinal `seq` is NOT the protocol packet sequence number.
+        # Packet events carry the latter in common_header; protocol events may
+        # put it at the top level (or have no packet cause at all).
+        packet_sequence = header.get("sequence_number", raw.get("sequence_number"))
+        packet_type = header.get("packet_type", raw.get("packet_type"))
+        detail_keys = (
+            "message_id", "data_id", "update_id", "join_id", "fragment_count",
+            "block_number", "last_block_number", "window_start", "window_end",
+            "retry_count", "trigger_sequence_number", "attempt", "bytes",
+            "accepted_bytes", "reason", "error", "role", "model_id",
+            "send_buffer_size", "packet_id", "source", "destination", "target", "trigger_peer",
+            "is_broadcast", "time_s", "packet_type", "sequence_number",
+        )
+        details = {key: raw[key] for key in detail_keys if key in raw}
         event = {
-            "seq": self._next_seq,
+            "seq": self._next_seq if assign_seq else None,
             "time_s": time_s,
             "event": event_type,
             "stream": stream_type,
             "node": node_name,
             "source": source_node,
             "target": target_node,
-            "packet_type": header.get("packet_type"),
+            "packet_type": packet_type,
+            "packet_id": raw.get("packet_id"),
+            "message_id": raw.get("message_id"),
+            "update_id": raw.get("update_id"),
+            "fragment_count": raw.get("fragment_count"),
+            "details": details,
             "is_broadcast": bool(raw.get("is_broadcast", False)),
-            "sequence_number": header.get("sequence_number"),
+            "sequence_number": packet_sequence,
+            "trigger_sequence_number": raw.get("trigger_sequence_number"),
             "reason": raw.get("reason"),
             "distance_m": raw.get("distance_m"),
             "rssi_dbm": raw.get("rssi_dbm"),
@@ -308,13 +347,15 @@ class RunData:
             "bytes": raw.get("bytes"),
             "counters": {k: v for k, v in counters.items() if k in NUMERIC_METRIC_FIELDS},
         }
-        self._next_seq += 1
+        if assign_seq:
+            self._next_seq += 1
         return event
 
     def _refresh_events(self):
         patterns = (
             ("debug/packets/*.jsonl", "packet"),
             ("debug/events/*.jsonl", "protocol"),
+            ("debug/connections/*.jsonl", "connection"),
             # Legacy layouts remain readable.
             ("*.packets.jsonl", "packet"),
             ("*.events.jsonl", "protocol"),
@@ -349,14 +390,28 @@ class RunData:
                                 continue
                             event = self._normalize_event(raw, path.name, stream_type)
                             self._events.append(event)
-                            if stream_type == "protocol" and event["event"] in {
-                                "flame_joined", "flame_leave_sent", "flame_sensor_received",
+                            # Compact connection logs mirror some detailed FLAME events.
+                            # Use the detailed version when both exist to avoid replaying
+                            # JOIN/LEAVE twice on the map and in the node inspector.
+                            mirrored_connection = (stream_type == "connection" and
+                                (self.run_dir / "debug" / "events" / path.name).is_file())
+                            if not mirrored_connection and stream_type in ("protocol", "connection") and event["event"] in {
+                                "flame_hello_sent", "flame_ch_discovered", "flame_join_sent", "flame_joined",
+                                "flame_leave_sent", "flame_connection_lost", "flame_member_expired",
+                                "flame_join_pending_expired",
+                                "flame_leave_observed", "flame_sensor_received",
                                 "flame_model_sent", "flame_model_received",
-                            } and event["source"] and event["target"]:
+                                "flame_trained", "flame_aggregated",
+                                "flame_transfer_complete", "flame_transfer_failed",
+                                "flame_model_retry_scheduled", "flame_model_retry_exhausted",
+                            } and event["source"] and (event["target"] or event["event"] in {"flame_hello_sent", "flame_trained", "flame_aggregated"}):
                                 self._relationships.append({
                                     "seq": event["seq"], "time_s": event["time_s"],
-                                    "action": event["event"],
+                                    "action": event["event"], "node": event["node"],
                                     "source": event["source"], "target": event["target"],
+                                    "reason": event["reason"], "packet_type": event["packet_type"],
+                                    "sequence_number": event["sequence_number"],
+                                    "message_id": event["message_id"], "update_id": event["update_id"],
                                 })
                         state["offset"] = stream.tell()
                         state["size"] = size
@@ -374,29 +429,234 @@ class RunData:
         with self._lock:
             self._refresh_events()
             logging_enabled = bool(self._plan and self._plan.logging_config.protocol_events)
+            logging_enabled = logging_enabled or any(
+                (self.run_dir / "debug" / "connections").glob("*.jsonl")
+            ) or any((self.run_dir / "debug" / "events").glob("*.jsonl"))
             return {
                 "available": logging_enabled,
                 "events": sorted(self._relationships, key=lambda e: (e["time_s"], e["seq"])),
                 "truncated": len(self._relationships) == self._relationships.maxlen,
+                "source": "protocol or compact connection log" if logging_enabled else "none",
             }
 
-    def events(self, from_s=None, to_s=None, after_seq=None, limit=2000):
+    # One checkpoint per 256 lines per log: bounded memory and fast seek by time.
+    _LOG_TIME = re.compile(rb'"time_s"\s*:\s*(-?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)')
+
+    def _event_log_sources(self):
+        patterns = (("debug/packets/*.jsonl", "packet"),
+                    ("debug/events/*.jsonl", "protocol"),
+                    ("debug/connections/*.jsonl", "connection"),
+                    ("*.packets.jsonl", "packet"),
+                    ("*.events.jsonl", "protocol"))
+        sources = sorted(((path, kind)
+            for pattern, kind in patterns for path in self.run_dir.glob(pattern)),
+            key=lambda item: str(item[0]))
+        # Connection logger duplicates specific protocol records if full logging is enabled.
+        return [(path, kind) for path, kind in sources if not (
+            kind == "connection" and (self.run_dir / "debug/events" / path.name).is_file())]
+
+    def _update_window_index(self, path):
+        """Index appended, newline-terminated records without JSON-parsing every packet."""
+        key = str(path)
+        entry = self._window_index.setdefault(key, {"offset": 0, "line_count": 0, "marks": []})
+        try:
+            size = path.stat().st_size
+            if size < entry["offset"]:
+                entry.update(offset=0, line_count=0, marks=[])
+            if size == entry["offset"]:
+                return entry
+            with path.open('rb') as stream:
+                stream.seek(entry["offset"])
+                while True:
+                    start = stream.tell()
+                    line = stream.readline()
+                    if not line or not line.endswith(b'\n'):
+                        break
+                    entry["line_count"] += 1
+                    if (entry["line_count"] - 1) % 256 == 0:
+                        match = self._LOG_TIME.search(line)
+                        if match:
+                            try:
+                                timestamp = float(match.group(1))
+                            except ValueError:
+                                timestamp = -1
+                            entry["marks"].append((timestamp, start))
+                entry["offset"] = stream.tell()
+        except OSError:
+            pass
+        return entry
+
+    @staticmethod
+    def _preview_group(event):
+        name = event['event']
+        if (name in ('delivery_drop', 'local_drop', 'socket_error') or
+                any(word in name for word in ('failed', 'error', 'rejected', 'dropped'))):
+            return 'drop'
+        if event['stream'] in ('protocol', 'connection'):
+            return 'protocol'
+        if name == 'receive':
+            return 'receive'
+        if name == 'transmit':
+            return 'transmit'
+        # Queue/admission/kernel steps are internal details, not transmissions.
+        return 'internal'
+
+    @staticmethod
+    def _preview_key(event):
+        return (event['stream'] in ('protocol', 'connection') and
+                event['event'] not in ('flame_hello_sent', 'flame_message_reassembled',
+                                      'flame_sample_collected', 'flame_sensor_queued'))
+
+    @staticmethod
+    def _search_text(event):
+        """Searchable record with wire packet names, not just numeric type IDs."""
+        packet_names = ('HELLO', 'LEAVE', 'SENSOR_DATA', 'SENSOR_DATA_ACK',
+                        'MODEL_UPDATE', 'MODEL_UPDATE_ACK', 'JOIN', 'JOIN_ACCEPT')
+        packet_type = event.get('packet_type')
+        label = (packet_names[packet_type]
+                 if isinstance(packet_type, int) and 0 <= packet_type < len(packet_names)
+                 else '')
+        return (json.dumps(event, ensure_ascii=False, default=str) + ' ' + label).lower()
+
+    @staticmethod
+    def _panel_activity(event):
+        """Meaningful FLAME lifecycle events, not every internal fragment/queue step."""
+        if event['stream'] not in ('protocol', 'connection'):
+            return False
+        name = event['event']
+        if name in ('flame_message_reassembled', 'flame_sensor_queued',
+                    'flame_sample_collected', 'flame_started'):
+            return False
+        return name.startswith('flame_')
+
+    @staticmethod
+    def _panel_packet(event):
+        """Actual wire packet stages only; excludes queued/scheduled operations."""
+        return event['stream'] == 'packet' and event['event'] in (
+            'transmit', 'local_drop')
+
+    @staticmethod
+    def _panel_network(event):
+        """Physical/transport outcome view, including logged socket failures."""
+        return event['stream'] == 'packet' and event['event'] in (
+            'transmit', 'receive', 'delivery_drop', 'local_drop', 'socket_error')
+
+    def _window_events(self, from_s, to_s, limit, category='all', search=''):
+        """Read the selected playback interval from disk, not an evicting live cache.
+
+        Filter BEFORE limiting. Each per-node JSONL stream is chronological, and its
+        sparse index lets us jump near the requested time. The returned preview is
+        explicitly bounded; /api/events/archive provides the complete recorded history.
+        """
+        if category not in ('all','key','protocol','transmit','receive','drop','traffic','activity','packets','network'):
+            raise ValueError('Unknown event category')
+        start = max(0.0, float(from_s or 0))
+        end = float('inf') if to_s is None else max(start, float(to_s))
+        limit = max(1, min(int(limit), 2000))
+        query = str(search or '').strip().lower()[:120]
+        recent = []
+        matched = 0
+        source_count = 0
+        # Keep a separate lock; background metrics ingestion may be processing
+        # hundreds of thousands of packet records concurrently.
+        with self._window_index_lock:
+            for path, kind in self._event_log_sources():
+                if category in ('key', 'protocol', 'activity') and kind == 'packet':
+                    continue
+                if category in ('transmit', 'receive', 'traffic', 'packets', 'network') and kind != 'packet':
+                    continue
+                index = self._update_window_index(path)
+                marks = index['marks']
+                timestamps = [pair[0] for pair in marks]
+                index_pos = bisect.bisect_right(timestamps, start) - 1
+                offset = marks[index_pos][1] if index_pos >= 0 else 0
+                source_count += 1
+                try:
+                    with path.open('rb') as stream:
+                        stream.seek(offset)
+                        while True:
+                            byte_position = stream.tell()
+                            line = stream.readline()
+                            if not line or not line.endswith(b'\n'):
+                                break
+                            time_match = self._LOG_TIME.search(line)
+                            if not time_match:
+                                continue
+                            timestamp = float(time_match.group(1))
+                            if timestamp < start:
+                                continue
+                            if timestamp > end:
+                                # Individual node output is written in time order.
+                                break
+                            try:
+                                raw = json.loads(line)
+                            except (ValueError, UnicodeDecodeError):
+                                continue
+                            event = self._normalize_event(raw, path.name, kind, assign_seq=False)
+                            event['seq'] = f'{path.parent.name}/{path.name}@{byte_position}'
+                            if category == 'activity' and not self._panel_activity(event):
+                                continue
+                            if category == 'packets' and not self._panel_packet(event):
+                                continue
+                            if category == 'network' and not self._panel_network(event):
+                                continue
+                            if category == 'key' and not self._preview_key(event):
+                                continue
+                            if category == 'protocol' and kind not in ('protocol','connection'):
+                                continue
+                            if category == 'traffic':
+                                if (event['event'] not in ('receive', 'delivery_drop')
+                                        or not event['source'] or not event['target']):
+                                    continue
+                            elif category not in ('all', 'key', 'protocol', 'activity', 'packets', 'network') and self._preview_group(event) != category:
+                                continue
+                            if query and query not in self._search_text(event):
+                                continue
+                            matched += 1
+                            key = (timestamp, matched)
+                            if len(recent) < limit:
+                                heapq.heappush(recent, (key, event))
+                            elif key > recent[0][0]:
+                                heapq.heapreplace(recent, (key, event))
+                except OSError:
+                    continue
+        selected = [event for _, event in sorted(recent, key=lambda x: x[0])]
+        return {"events": selected, "matching_count": matched,
+                "hidden_count": max(0, matched-len(selected)),
+                "retained_events": None, "truncated": matched > len(selected),
+                "source_count": source_count, "source": "indexed recorded JSONL",
+                "complete_recorded_history": "/api/events/archive"}
+
+    def events(self, from_s=None, to_s=None, after_seq=None, limit=2000,
+               category="all", search=""):
+        """Latest matching events, returned in chronological order.
+
+        Node processes write their own JSONL files, so append/record order is NOT
+        chronological order. Select the latest K with a bounded heap instead of
+        sorting all retained events (up to 200,000) for each browser refresh.
+        """
+        if (from_s is not None or to_s is not None) and after_seq is None \
+                and hasattr(self, '_window_index_lock'):
+            return self._window_events(from_s, to_s, limit, category, search)
         with self._lock:
             self._refresh_events()
             limit = max(1, min(int(limit), 10_000))
-            result = []
-            for event in self._events:
-                if after_seq is not None and event["seq"] <= after_seq:
-                    continue
-                if from_s is not None and event["time_s"] < from_s:
-                    continue
-                if to_s is not None and event["time_s"] > to_s:
-                    continue
-                result.append(event)
-            if len(result) > limit:
-                result = result[-limit:]
+
+            def matching_events():
+                for event in self._events:
+                    if after_seq is not None and event["seq"] <= after_seq:
+                        continue
+                    if from_s is not None and event["time_s"] < from_s:
+                        continue
+                    if to_s is not None and event["time_s"] > to_s:
+                        continue
+                    yield event
+
+            by_time = lambda event: (event["time_s"], event["seq"])
+            recent = heapq.nlargest(limit, matching_events(), key=by_time)
+            recent.sort(key=by_time)
             return {
-                "events": result,
+                "events": recent,
                 "last_seq": self._events[-1]["seq"] if self._events else 0,
                 "retained_events": len(self._events),
                 "truncated": len(self._events) == self._events.maxlen,
@@ -464,46 +724,225 @@ class RunData:
             totals["completed_metric_files"] = completed_metric_files
             totals["node_metric_rows"] = len(per_node)
             return {
+                "flame_outcome": aggregate.get("flame_outcome") if isinstance(aggregate, dict) else None,
+                "protocol_success": aggregate.get("protocol_success") if isinstance(aggregate, dict) else None,
+                "execution_success": aggregate.get("execution_success") if isinstance(aggregate, dict) else None,
                 "complete": aggregate_complete,
                 "source": "aggregate" if aggregate_complete else ("events" if self._events else "none"),
                 "totals": totals,
                 "nodes": sorted(per_node.values(), key=lambda row: row["node_name"]),
             }
 
-    def timeline(self, bucket_s=1.0):
-        with self._lock:
-            self._refresh_events()
-            bucket_s = max(0.1, min(_safe_float(bucket_s, 1.0), 60.0))
-            duration_s = self._plan.config.duration_s if self._plan else 0.0
-            buckets = defaultdict(lambda: {"sent": 0, "received": 0, "dropped": 0})
-            totals = {"sent": 0, "received": 0, "dropped": 0}
-            max_t = duration_s
-            for event in self._events:
-                t = event["time_s"]
-                if t < 0:
+    def event_archive(self, *, offset=0, limit=100, from_s=0, to_s=None,
+                      category="all", search=""):
+        """Paginate recorded on-disk events, not the capped live preview cache.
+
+        This page is diagnostics-only; disk scans are intentionally on demand.
+        It never claims events that were not logged in the first place.
+        """
+        from itertools import count
+        offset = max(0, min(int(offset), 1_000_000_000))
+        limit = max(1, min(int(limit), 500))
+        lower = max(0.0, _safe_float(from_s))
+        upper = float('inf') if to_s is None else max(lower, _safe_float(to_s))
+        search = str(search or "").lower().strip()[:120]
+        if category not in {'all', 'protocol', 'packet', 'drop', 'key', 'activity', 'packets', 'network'}:
+            raise ValueError('Invalid archive category')
+        patterns = (("debug/packets/*.jsonl", "packet"),
+                    ("debug/events/*.jsonl", "protocol"),
+                    ("debug/connections/*.jsonl", "connection"),
+                    ("*.packets.jsonl", "packet"),
+                    ("*.events.jsonl", "protocol"))
+        paths = sorted({str(path): (path, kind)
+                        for pattern,kind in patterns
+                        for path in self.run_dir.glob(pattern)}.values(),
+                       key=lambda row: str(row[0]))
+        # Compact connection logs duplicate selected protocol records when verbose
+        # protocol logging is also enabled; prefer the richer original event log.
+        paths = [(path, kind) for path, kind in paths if not (
+            kind == 'connection' and
+            (self.run_dir / 'debug' / 'events' / path.name).exists())]
+        streams, heap = [], []
+        def lines(path):
+            with path.open(encoding='utf8') as handle:
+                yield from enumerate(handle, 1)
+        def next_item(i):
+            stream, path, kind = streams[i]
+            for num, line in stream:
+                try:
+                    raw = json.loads(line)
+                except (ValueError, TypeError):
                     continue
-                index = int(t / bucket_s)
-                max_t = max(max_t, t)
-                if event["event"] == "transmit":
-                    buckets[index]["sent"] += 1
-                    totals["sent"] += 1
-                elif event["event"] == "receive":
-                    buckets[index]["received"] += 1
-                    totals["received"] += 1
-                elif event["event"] in {"delivery_drop", "local_drop"}:
-                    buckets[index]["dropped"] += 1
-                    totals["dropped"] += 1
-            rows = []
-            max_index = int(max_t / bucket_s) if max_t > 0 else 0
-            for index in range(max_index + 1):
-                row = buckets[index]
-                rows.append({"time_s": index * bucket_s, **row})
-            return {
-                "bucket_s": bucket_s,
-                "rows": rows,
-                "totals": totals,
-                "has_packet_traffic": any(totals.values()),
-            }
+                ts = _safe_float(raw.get('time_s'), -1)
+                if ts < lower:
+                    continue
+                if ts > upper:
+                    # Node event files are chronological. Stop reading this
+                    # source once it passes the selected playback window.
+                    return None
+                event = self._normalize_event(raw, path.name, kind, assign_seq=False)
+                event['archive_id'] = f'{path.name}:{num}'
+                return ts, i, num, event
+            return None
+        # Process streams as a k-way merge. Each node's JSONL is time-ordered.
+        try:
+            for path,kind in paths:
+                try:
+                    stream = lines(path)
+                    streams.append((stream, path, kind))
+                except OSError:
+                    continue
+            for i in range(len(streams)):
+                item = next_item(i)
+                if item: heapq.heappush(heap, item)
+            found=0
+            rows=[]
+            more=False
+            while heap:
+                _, i, _, ev = heapq.heappop(heap)
+                new = next_item(i)
+                if new: heapq.heappush(heap,new)
+                kind = ev['stream']; evt = ev['event']
+                relevant = (category == 'all' or
+                    category == 'protocol' and kind in ('protocol', 'connection') or
+                    category == 'packet' and kind == 'packet' or
+                    category == 'drop' and self._preview_group(ev) == 'drop' or
+                    category == 'key' and self._preview_key(ev) or
+                    category == 'activity' and self._panel_activity(ev) or
+                    category == 'packets' and self._panel_packet(ev) or
+                    category == 'network' and self._panel_network(ev))
+                if not relevant:
+                    continue
+                if search and search not in self._search_text(ev):
+                    continue
+                if found >= offset + limit:
+                    more=True
+                    break
+                if found >= offset:
+                    rows.append(ev)
+                found+=1
+            return {'run':self.name,'events':rows,'offset':offset,'limit':limit,
+                    'has_more':more,'next_offset':offset+len(rows),
+                    'available':bool(paths),
+                    'source':'Recorded JSONL only; events not originally logged cannot be reconstructed.',
+                    'logging':self._plan.logging_config.to_dict() if self._plan else {}}
+        finally:
+            for stream, _, _ in streams:
+                try: stream.close()
+                except (AttributeError, OSError): pass
+
+    def learning(self):
+        """Return observed per-CH quality; never invent intermediate accuracy."""
+        with self._lock:
+            self._refresh_plan()
+            self._refresh_manifest()
+            nodes = []
+            for spec in (self._plan.nodes if self._plan is not None else []):
+                if int(spec.role) != 1:
+                    continue
+                points = []
+                log_path = self.run_dir / "flame" / f"{spec.name}-learning.jsonl"
+                if log_path.is_file():
+                    try:
+                        with log_path.open(encoding="utf8") as stream:
+                            for line in stream:
+                                try:
+                                    entry = json.loads(line)
+                                except (json.JSONDecodeError, ValueError):
+                                    continue
+                                if isinstance(entry, dict) and entry.get("measurement") == "sampled_test_accuracy":
+                                    points.append(entry)
+                    except OSError:
+                        pass
+                final = _load_json(self.run_dir / "flame" / f"{spec.name}.json", {}) or {}
+                nodes.append({"name": spec.name, "points": points,
+                              "final": final.get("model_evaluation"),
+                              "counters": final.get("counters", {}),
+                              "model_revision": final.get("model_update_id"),
+                              "history_enabled": bool(final.get("learning_history", {}).get("enabled"))})
+            return {"run": self.name, "status": (self._manifest or {}).get("status", "waiting"),
+                    "duration_s": self._plan.config.duration_s if self._plan else 0,
+                    "nodes": nodes,
+                    "note": "Each point is held-out MNIST classification quality for one model revision, not training accuracy or convergence proof. Softmax example confidence is not calibrated probability of correctness."}
+
+    def timeline(self, bucket_s=1.0):
+        """Exact logged packet counts by time bucket, including evicted events.
+
+        The live event cache is intentionally bounded, so graphing its counts
+        silently loses early transmissions in high-volume runs. Track read offsets
+        for each JSONL file and incrementally count appended packet records instead.
+        """
+        with self._lock:
+            bucket_s = max(0.1, min(_safe_float(bucket_s, 1.0), 60.0))
+            cache = self._timeline_caches.get(bucket_s)
+            paths = [path for path, kind in self._event_log_sources() if kind == "packet"]
+            # A run can be restarted in the same folder or its logs rotated.
+            # In that case rebuild counters rather than counting stale history.
+            if cache is not None:
+                current_paths = {str(path) for path in paths}
+                if set(cache["offsets"]) - current_paths:
+                    cache = None
+                else:
+                    for path in paths:
+                        try:
+                            if path.stat().st_size < cache["offsets"].get(str(path), 0):
+                                cache = None
+                                break
+                        except OSError:
+                            cache = None
+                            break
+            if cache is None:
+                cache = {"offsets": {}, "buckets": defaultdict(
+                    lambda: {"sent": 0, "received": 0, "dropped": 0}),
+                         "totals": {"sent": 0, "received": 0, "dropped": 0},
+                         "max_time": 0.0}
+                self._timeline_caches[bucket_s] = cache
+
+            for path in paths:
+                key = str(path)
+                try:
+                    with path.open("rb") as stream:
+                        stream.seek(cache["offsets"].get(key, 0))
+                        while True:
+                            start = stream.tell()
+                            line = stream.readline()
+                            if not line or not line.endswith(b"\n"):
+                                stream.seek(start)
+                                break
+                            # Avoid JSON-decoding internal queue steps. A fast
+                            # substring check keeps the high-volume graphs cheap.
+                            if not any(name in line for name in
+                                       (b'"transmit"', b'"receive"',
+                                        b'"delivery_drop"', b'"local_drop"')):
+                                continue
+                            try:
+                                event = json.loads(line)
+                            except (ValueError, UnicodeDecodeError):
+                                continue
+                            name = event.get("event")
+                            field = ({"transmit": "sent", "receive": "received",
+                                      "delivery_drop": "dropped",
+                                      "local_drop": "dropped"}).get(name)
+                            time_s = _safe_float(event.get("time_s"), -1.0)
+                            if field is None or time_s < 0:
+                                continue
+                            index = int(time_s / bucket_s)
+                            cache["buckets"][index][field] += 1
+                            cache["totals"][field] += 1
+                            cache["max_time"] = max(cache["max_time"], time_s)
+                        cache["offsets"][key] = stream.tell()
+                except OSError:
+                    continue
+
+            duration_s = self._plan.config.duration_s if self._plan else 0.0
+            max_index = int(max(duration_s, cache["max_time"]) / bucket_s)
+            rows = [{"time_s": i * bucket_s,
+                     **cache["buckets"].get(i, {"sent": 0, "received": 0, "dropped": 0})}
+                    for i in range(max_index + 1)]
+            totals = dict(cache["totals"])
+            return {"bucket_s": bucket_s, "rows": rows, "totals": totals,
+                    "has_packet_traffic": any(totals.values()),
+                    "source": "all recorded packet logs (incremental)"}
 
 
 
@@ -633,6 +1072,8 @@ class VisualizerHandler(SimpleHTTPRequestHandler):
                         to_s=None if to_s is None else float(to_s),
                         after_seq=None if after_seq is None else int(after_seq),
                         limit=int(limit),
+                        category=query.get("category", ["all"])[0],
+                        search=query.get("search", [""])[0],
                     ))
                 elif parsed.path == "/api/metrics":
                     self._json(run.metrics())
@@ -640,6 +1081,15 @@ class VisualizerHandler(SimpleHTTPRequestHandler):
                     self._json(run.timeline(query.get("bucket_s", [1.0])[0]))
                 elif parsed.path == "/api/relationships":
                     self._json(run.relationships())
+                elif parsed.path == "/api/learning":
+                    self._json(run.learning())
+                elif parsed.path == "/api/events/archive":
+                    self._json(run.event_archive(
+                        offset=query.get("offset", [0])[0], limit=query.get("limit", [100])[0],
+                        from_s=query.get("from_s", [0])[0],
+                        to_s=query.get("to_s", [None])[0],
+                        category=query.get("category", ["all"])[0],
+                        search=query.get("search", [""])[0]))
                 else:
                     self._json({"error": "unknown API endpoint"}, HTTPStatus.NOT_FOUND)
                 return

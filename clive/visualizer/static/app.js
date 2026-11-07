@@ -1,7 +1,7 @@
 "use strict";
 
 const state = {
-  run: null,
+  run: new URLSearchParams(window.location.search).get("run") || null,
   meta: null,
   frame: null,
   mobilityTrace: null,
@@ -19,24 +19,32 @@ const state = {
   playAnchorTimeS: 0,
   visibleEvents: [],
   packetEvents: [],
+  packetRequestInFlight: false,
+  lastPacketMarkerKey: "",
+  lastPacketMarkerAt: 0,
+  trafficHoverBucket: null,
+  trafficBucketS: 1,
   relationships: {available: false, events: [], truncated: false},
   relationshipRevision: "",
-  relationshipCache: {cursor: 0, time: -1, associations: new Map(), peers: new Map()},
+  stageTimeline: [],
+  relationshipCache: CliveConnectionTracker.empty(),
   linkMode: "protocol",
   hoveredNode: null,
   frameRequestKey: null,
   eventRequestInFlight: false,
+  eventRequestPending: false,
+  eventResult: null,
   lastEventRefreshWallMs: 0,
+  lastEventQuerySignature: "",
+  lastEventQueryAt: 0,
+  lastTopologyDrawAt: 0,
+  lastTrafficDrawAt: 0,
   view: {zoom: 1, panX: 0, panY: 0},
   pointer: {active: false, id: null, startX: 0, startY: 0, startPanX: 0, startPanY: 0, moved: false},
   periodicBusy: false,
   latestRunName: null,
-  hitLinks: [],
-  hoverLink: null,
-  pinnedLink: null,
-  pointerAt: null,
-  lastHoverRefreshTs: 0,
-  pinnedRenderKey: "",
+  guide: CliveGuidedPlayback.create(),
+  guidedPlayback: false,
   ui: {activeTab: "trafficPanel", sidebarCollapsed: false, focusMode: false},
 };
 
@@ -45,6 +53,7 @@ const canvas = $("topologyCanvas");
 const ctx = canvas.getContext("2d");
 const trafficCanvas = $("trafficCanvas");
 const tctx = trafficCanvas.getContext("2d");
+const trafficTooltip = $("trafficTooltip");
 
 const clamp = (value, lo, hi) => Math.max(lo, Math.min(hi, value));
 const fmtInt = (n) => Math.round(Number(n || 0)).toLocaleString();
@@ -71,18 +80,13 @@ const api = async (path) => {
 const runQueryFor = (run) => run ? `run=${encodeURIComponent(run)}` : "";
 const runQuery = () => runQueryFor(state.run);
 const escapeHtml = (v) => String(v ?? "").replace(/[&<>"']/g, (ch) => ({"&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;"}[ch]));
-const PACKET_NAMES = ["HELLO", "LEAVE", "SENSOR_DATA", "SENSOR_ACK", "MODEL_UPDATE", "MODEL_ACK", "JOIN", "JOIN_ACCEPT"];
+const PACKET_NAMES = ["HELLO", "LEAVE", "SENSOR_DATA", "SENSOR_DATA_ACK", "MODEL_UPDATE", "MODEL_UPDATE_ACK", "JOIN", "JOIN_ACCEPT"];
 const packetName = (n) => PACKET_NAMES[Number(n)] || (n == null ? "—" : `TYPE ${n}`);
 
 function visibleWorkbenchTargets() {
-  // A tab can be hidden because it is INACTIVE, which is different from being
-  // unavailable because logging was disabled. Never derive availability from
-  // the panel.hidden property.
-  if (!state.meta) return ["trafficPanel", "eventsPanel", "nodesPanel"];
-  const packet = Boolean(state.meta.logging?.packet_events);
-  const protocol = Boolean(state.meta.logging?.protocol_events);
-  return [...(packet ? ["trafficPanel"] : []),
-    ...(packet || protocol ? ["eventsPanel"] : []), "nodesPanel"];
+  // Diagnostics remain navigable even if packet logging was disabled.
+  // Showing an empty panel with an explanation is better than hiding it.
+  return ["trafficPanel", "eventsPanel", "nodesPanel"];
 }
 
 function setWorkbenchTab(target) {
@@ -101,15 +105,14 @@ function setWorkbenchTab(target) {
     }
   });
   if (target === "trafficPanel") drawTrafficChart();
+  if (target === "eventsPanel") refreshVisibleEvents();
 }
 
 function syncWorkbenchVisibility() {
-  const packetLogging = Boolean(state.meta?.logging?.packet_events);
-  const protocolLogging = Boolean(state.meta?.logging?.protocol_events);
-  const trafficButton = $("tab-traffic");
-  const eventsButton = $("tab-events");
-  if (trafficButton) trafficButton.hidden = !packetLogging;
-  if (eventsButton) eventsButton.hidden = !(packetLogging || protocolLogging);
+  // Events can be present in the compact connection log even with packet logging off.
+  // Never hide a tab based on the scenario's logging switches.
+  $("tab-traffic").hidden = false;
+  $("tab-events").hidden = false;
   setWorkbenchTab(state.ui.activeTab);
 }
 
@@ -247,19 +250,10 @@ async function refreshRuns() {
 
     const newest = data.runs[0].name;
     let switched = false;
-    if (state.latestRunName === null) {
-      state.latestRunName = newest;
-      if (!state.run || !data.runs.some(r => r.name === state.run)) {
-        state.run = newest;
-        switched = true;
-      }
-    } else if (newest !== state.latestRunName) {
-      // A new CLIVE run appeared. Follow it automatically once, while still allowing
-      // the user to manually inspect older runs until another new run is created.
-      state.latestRunName = newest;
-      state.run = newest;
-      switched = true;
-    } else if (!state.run || !data.runs.some(r => r.name === state.run)) {
+    // Select the most recent run on first load. Once the user has chosen a run,
+    // never unexpectedly replace it during a polling refresh.
+    state.latestRunName = newest;
+    if (!state.run || !data.runs.some(r => r.name === state.run)) {
       state.run = newest;
       switched = true;
     }
@@ -272,8 +266,12 @@ async function refreshRuns() {
       state.currentTick = -1;
       state.metrics = null;
       state.timeline = [];
+      state.packetEvents = [];
+      state.lastPacketMarkerKey = "";
+      state.trafficHoverBucket = null;
+      trafficTooltip.hidden = true;
       state.selectedNode = null;
-      state.hoverLink = null; state.pinnedLink = null;
+      state.guide = CliveGuidedPlayback.create();
       state.frameRequestKey = null;
       state.playing = false;
       state.playAnchorWallMs = null;
@@ -300,18 +298,24 @@ async function refreshMeta() {
     $("topologySubtitle").textContent = `${meta.nodes.length} nodes · ${meta.mobility.area_width_m} × ${meta.mobility.area_height_m} m · ${meta.mobility.model.replaceAll("_", " ")} · ${meta.mobility.initial_topology} topology · position interval ${meta.tick_interval_s}s`;
     $("mNodes").textContent = fmtInt(meta.nodes.length);
     $("configRun").textContent = meta.run;
+    $("learningPageLink").href = `/learning.html?run=${encodeURIComponent(meta.run)}`;
+    $("learningInlineLink").href = `/learning.html?run=${encodeURIComponent(meta.run)}`;
+    $("eventArchiveLink").href = `/events.html?run=${encodeURIComponent(meta.run)}`;
     $("timeSlider").max = meta.duration_s;
-    $("timeSlider").step = Math.min(0.05, meta.tick_interval_s);
+    $("timeSlider").step = "0.000001"; // 1 µs seek increments; recorded timing precision is bounded by source clock, not radio physics.
     renderConfig();
     applyLoggingVisibility();
     if (changed) {
       state.currentTime = 0;
       state.selectedNode = null;
       state.visibleEvents = [];
+      state.eventResult = null;
       state.packetEvents = [];
+      state.lastPacketMarkerKey = "";
+      state.trafficHoverBucket = null;
+      trafficTooltip.hidden = true;
       resetRelationships();
       state.frameRequestKey = null;
-      resetRelationships();
       state.mobilityTrace = null;
       state.currentTick = -1;
       state.playing = false;
@@ -345,6 +349,9 @@ function renderConfig() {
     ["Initial topology", m.initial_topology],
     ["Position update interval", `${m.tick_interval}s`],
     ["Protocol", protocol.split(":").pop()],
+    ["Training workload", state.meta.flame?.trainer === "mean_pixel" ? "PROXY (not neural-network training)" : "PyTorch MNIST (if FLAME selected)"],
+    ["MNIST data assignment", state.meta.flame?.mnist_distribution === "sensor_id" ? "Sensor ID → digit (legacy)" : "Initial geographic region → digit (spatial clusters)"],
+    ["Sample repeat policy", state.meta.flame?.repeat_sensor_samples ? "Repeats enabled (transport stress)" : "Stop after sample pool exhaustion"],
     ["Radio range mode", l.range_mode],
     ["Default TX range", l.range_mode === "explicit" ? (l.max_range_m != null ? `${Number(l.max_range_m).toFixed(1)} m` : "role/node override") : "RSSI-derived"],
     ["Pathloss exponent", l.pathloss_exponent],
@@ -363,7 +370,7 @@ function renderConfig() {
       entries.splice(7, 0, ["Pause chance / s", `${(100 * Number(m.pause_probability_per_second)).toFixed(1)}%`]);
     }
   }
-  $("configList").innerHTML = entries.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("");
+  $("configList").innerHTML = entries.map(([k, v]) => `<dt>${escapeHtml(k)}</dt><dd>${escapeHtml(v)}</dd>`).join("");
 }
 
 async function refreshTrace() {
@@ -467,6 +474,23 @@ async function refreshMetrics() {
     $("mDrops").textContent = fmtInt(t.delivery_drops + t.packets_dropped);
     $("mDropRatio").textContent = `${(100 * Number(t.observed_delivery_drop_ratio || 0)).toFixed(2)}%`;
     $("mEnergy").textContent = fmtEnergy(t.energy_sent_j);
+    const outcome = metrics.flame_outcome;
+    $("mModels").textContent = outcome?.available ? fmtInt(outcome.model_transfers_completed) : "—";
+    const notice = $("protocolHealth");
+    if (notice) {
+      if (outcome?.available) {
+        const m = outcome;
+        const kind = m.real_neural_network_training ? "Real MNIST/PyTorch" : "PROXY workload (not neural-network training)";
+        const accuracy = Number.isFinite(m.final_mnist_accuracy_mean)
+          ? `Held-out MNIST accuracy: ${(100 * m.final_mnist_accuracy_mean).toFixed(2)}% (mean across evaluated CHs). `
+          : "Held-out MNIST accuracy: not measured. ";
+        notice.textContent = `${kind} · Model delivery: ${m.model_transfers_completed}/${m.model_transfers_started} complete; ` +
+          `${m.model_transfers_failed} failed, ${m.model_transfers_unfinished} unfinished. ` +
+          accuracy + "Worker completion is not FLAME reliability. RX/TX is not PDR for broadcasts; energy is modeled.";
+      } else {
+        notice.textContent = "FLAME model-delivery outcome unavailable. Worker completion alone is not protocol success.";
+      }
+    }
     const complete = Boolean(metrics.complete);
     const runComplete = state.meta?.manifest?.status === "complete";
     $("metricsMode").textContent = complete ? "final" : (runComplete ? "unavailable" : "pending");
@@ -505,6 +529,7 @@ async function refreshTimeline() {
     const data = await api(`/api/timeline?${runQueryFor(run)}&bucket_s=1`);
     if (run !== state.run) return;
     state.timeline = data.rows || [];
+    state.trafficBucketS = Number(data.bucket_s) || 1;
     state.timelineTotals = data.totals || {sent: 0, received: 0, dropped: 0};
     state.hasPacketTraffic = Boolean(data.has_packet_traffic);
     $("trafficSummary").textContent = `TX ${fmtInt(state.timelineTotals.sent)} · RX ${fmtInt(state.timelineTotals.received)} · drop ${fmtInt(state.timelineTotals.dropped)}`;
@@ -514,24 +539,67 @@ async function refreshTimeline() {
   }
 }
 
+// A time-window query scans indexed on-disk JSONL, not the capped live-event cache.
+// Filtering is server-side *before* the 160-row presentation limit.
 async function refreshVisibleEvents() {
-  const logging = state.meta?.logging || {};
-  if (!state.run || !state.meta || state.eventRequestInFlight || !(logging.packet_events || logging.protocol_events)) return;
+  if (!state.run || !state.meta) return;
+  if (state.eventRequestInFlight) {
+    state.eventRequestPending = true;
+    return;
+  }
+  const run = state.run;
+  const selectedTime = state.currentTime;
+  const windowChoice = "8";
+  const windowS = windowChoice === "all" ? state.meta.duration_s : Number(windowChoice);
+  const from = Math.max(0, selectedTime - windowS);
+  const to = Math.min(state.meta.duration_s, selectedTime + 0.10);
+  const filter = $("eventFilter").value;
+  const search = $("eventSearch")?.value?.trim() || "";
+  const query = new URLSearchParams({run, from_s: String(from), to_s: String(to),
+    category: filter, search, limit: "160"});
+  const signature = query.toString();
+  const nowMs = performance.now();
+  // Completed recordings are immutable. Do not repeatedly scan the same
+  // event window on every animation tick when playback is paused.
+  if (signature === state.lastEventQuerySignature && state.eventResult &&
+      (state.meta?.manifest?.status !== "running" ||
+       nowMs - state.lastEventQueryAt < 1800)) return;
+  const archiveCategory = filter;
+  $("eventArchiveLink").href = `/events.html?${new URLSearchParams({
+    run, from_s: String(from), to_s: String(to), category: archiveCategory, search})}`;
+  $("eventProblemsLink").href = `/events.html?${new URLSearchParams({
+    run, from_s: "0", to_s: String(to), category: "drop"})}`;
+  // Mark the request in-flight only after the cached-result early return.
+  // Otherwise a paused playback can permanently lock the Event Stream.
   state.eventRequestInFlight = true;
-  const windowS = 1.75;
   try {
-    const run = state.run;
-    const data = await api(`/api/events?${runQueryFor(run)}&from_s=${Math.max(0, state.currentTime - windowS)}&to_s=${Math.min(state.meta.duration_s, state.currentTime + 0.10)}&limit=1000`);
+    const data = await api(`/api/events?${query}`);
     if (run !== state.run) return;
+    // If playback moved substantially during the request, fetch the newer window.
+    if (Math.abs(state.currentTime - selectedTime) > 1 ||
+        $("eventFilter").value !== filter ||
+        ($("eventSearch")?.value?.trim() || "") !== search) {
+      state.eventRequestPending = true;
+      return;
+    }
+    state.lastEventQuerySignature = signature;
+    state.lastEventQueryAt = performance.now();
+    state.eventResult = data;
     state.visibleEvents = data.events || [];
-    // Keep packet rendering bounded even for 220-node traces. The event table still
-    // receives the complete requested time-window response.
-    state.packetEvents = state.visibleEvents.filter(e => ["receive", "delivery_drop"].includes(e.event) && e.source && e.target).slice(-180);
+    // Do not derive animated traffic from the Event tab's selected filter.
+    // Viewing PROTOCOL must never make real network traffic disappear.
     renderEventTable();
   } catch (error) {
-    console.error(error);
+    if (run === state.run) {
+      $("eventSummary").textContent = `Could not load events: ${error.message}`;
+      console.error("Event Stream request failed", error);
+    }
   } finally {
     state.eventRequestInFlight = false;
+    if (state.eventRequestPending) {
+      state.eventRequestPending = false;
+      refreshVisibleEvents();
+    }
   }
 }
 
@@ -540,7 +608,10 @@ async function refreshVisibleEvents() {
 function resetRelationships() {
   state.relationships = {available: false, events: [], truncated: false};
   state.relationshipRevision = "";
-  state.relationshipCache = {cursor: 0, time: -1, associations: new Map(), peers: new Map()};
+  state.stageTimeline = [];
+  state.relationshipCache = CliveConnectionTracker.empty();
+  state.guide = CliveGuidedPlayback.create();
+  $("nextAction").disabled = true;
 }
 
 async function refreshRelationships() {
@@ -554,41 +625,30 @@ async function refreshRelationships() {
     const rev = `${events.length}:${last?.seq ?? 0}:${last?.time_s ?? -1}`;
     if (rev !== state.relationshipRevision || Boolean(data.available) !== state.relationships.available) {
       state.relationships = {available: Boolean(data.available), events, truncated: Boolean(data.truncated)};
+      state.stageTimeline = CliveMapActivity.timeline(events);
+      $("nextAction").disabled = state.stageTimeline.length === 0;
       state.relationshipRevision = rev;
-      state.relationshipCache = {cursor: 0, time: -1, associations: new Map(), peers: new Map()};
+      state.relationshipCache = CliveConnectionTracker.empty();
+      state.guide = CliveGuidedPlayback.seek(state.stageTimeline, state.currentTime, performance.now());
+      if (state.playing) rebasePlaybackClock();
+      syncWorkbenchVisibility();
       updateSelectedNode();
     }
   } catch (error) { console.error(error); }
 }
 
 function replayRelationships(timeS) {
-  let c = state.relationshipCache;
-  if (timeS < c.time) {
-    c = {cursor: 0, time: -1, associations: new Map(), peers: new Map()};
-    state.relationshipCache = c;
+  let snapshot = state.relationshipCache;
+  if (timeS < snapshot.time) {
+    snapshot = CliveConnectionTracker.empty();
+    state.relationshipCache = snapshot;
   }
   const events = state.relationships.events;
-  while (c.cursor < events.length && events[c.cursor].time_s <= timeS) {
-    const ev = events[c.cursor++];
-    if (ev.action === "flame_joined") {
-      c.associations.set(ev.source, {ch: ev.target, joinedAt: ev.time_s, confirmedAt: null, lastSeen: ev.time_s});
-    } else if (ev.action === "flame_sensor_received") {
-      const old = c.associations.get(ev.source);
-      if (!old || old.ch !== ev.target) {
-        c.associations.set(ev.source, {ch: ev.target, joinedAt: null, confirmedAt: ev.time_s, lastSeen: ev.time_s});
-      } else {
-        old.confirmedAt = old.confirmedAt ?? ev.time_s;
-        old.lastSeen = ev.time_s;
-      }
-    } else if (ev.action === "flame_leave_sent") {
-      if (c.associations.get(ev.source)?.ch === ev.target) c.associations.delete(ev.source);
-    } else if (ev.action === "flame_model_sent" || ev.action === "flame_model_received") {
-      const key = [ev.source, ev.target].sort().join("|");
-      c.peers.set(key, ev.time_s);
-    }
+  while (snapshot.cursor < events.length && events[snapshot.cursor].time_s <= timeS) {
+    CliveConnectionTracker.apply(snapshot, events[snapshot.cursor++]);
   }
-  c.time = timeS;
-  return c;
+  snapshot.time = timeS;
+  return snapshot;
 }
 
 function roleCompatible(a, b) {
@@ -625,9 +685,6 @@ function drawLink(a, b, pair, point, options = {}) {
   // the nodes move out of range; it is NOT claimed to be a live radio link.
   if (!observed && !ab && !ba) return false;
   const [x1, y1] = point(a), [x2, y2] = point(b);
-  state.hitLinks.push({kind: "link", a: a.name, b: b.name, ax: x1, ay: y1, bx: x2, by: y2,
-    pair, observed, confirmed, type, emphasized: emphasize, priority: observed ? 4 : emphasize ? 3 : 1,
-    relation: options.relation || null});
   const color = (!ab && !ba) ? "rgba(255,107,122,.78)" :
     observed ? (confirmed ? "rgba(93,224,160,.83)" : "rgba(92,200,255,.76)") :
     type === "backbone" ? "rgba(155,140,255,.25)" :
@@ -639,225 +696,31 @@ function drawLink(a, b, pair, point, options = {}) {
   if (observed && !ab && !ba) ctx.setLineDash([3, 5]);
   ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
   ctx.setLineDash([]);
-  if (state.hoverLink?.kind === "link" && [state.hoverLink.a, state.hoverLink.b].sort().join("|") ===
-      [a.name, b.name].sort().join("|") && state.linkMode !== "none") {
-    ctx.strokeStyle = "rgba(229,245,255,.85)"; ctx.lineWidth = 3.2;
-    ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke();
-  }
-  if (ab) drawArrow(x1, y1, x2, y2, .63, color, emphasize ? 1.15 : .9);
-  if (ba) drawArrow(x2, y2, x1, y1, .63, color, emphasize ? 1.15 : .9);
+  if ($("showDirectionArrows")?.checked && ab) drawArrow(x1, y1, x2, y2, .63, color, emphasize ? 1.15 : .9);
+  if ($("showDirectionArrows")?.checked && ba) drawArrow(x2, y2, x1, y1, .63, color, emphasize ? 1.15 : .9);
   ctx.restore();
+  if ($("showLinkLabels")?.checked) drawLinkLabel(a, b, x1, y1, x2, y2, observed, confirmed);
   return true;
 }
 
-// Link hit-testing is done in screen pixels, never in emulated meters. It ignores
-// endpoints so node clicks continue to win over connections. Recorded packet dots
-// win over broad candidate lines when several edges overlap.
-function hitLinkAt(clientX, clientY) {
-  const rect = canvas.getBoundingClientRect();
-  const px = clientX - rect.left, py = clientY - rect.top;
-  let best = null, score = Infinity;
-  for (const edge of state.hitLinks) {
-    const dx = edge.bx - edge.ax, dy = edge.by - edge.ay;
-    const lengthSq = dx*dx + dy*dy;
-    if (lengthSq < 80) continue;
-    const t = clamp(((px-edge.ax)*dx + (py-edge.ay)*dy) / lengthSq, 0, 1);
-    // Do not intercept nodes near either end of the line.
-    if (t < .08 || t > .92) continue;
-    let x = edge.ax + t*dx, y = edge.ay + t*dy;
-    if (edge.kind === "packet") {
-      const age = state.currentTime - edge.event.time_s;
-      const progress = edge.event.event === "delivery_drop" ? .52 : clamp(age / .75, 0, 1);
-      x = edge.ax + progress*dx; y = edge.ay + progress*dy;
-    }
-    const d = Math.hypot(px-x, py-y);
-    const tolerance = edge.kind === "packet" ? 12 : 9;
-    if (d > tolerance) continue;
-    const metric = d - edge.priority * 1.5;
-    if (metric < score) { best = edge; score = metric; }
-  }
-  return best;
-}
-
-function packetMeaning(ev) {
-  const type = packetName(ev.packet_type);
-  const details = {
-    "HELLO": "The Cluster Head announces its presence to nearby nodes; this does not prove a sensor has joined.",
-    "JOIN": "A Sensor Node requests association with a Cluster Head.",
-    "JOIN_ACCEPT": "The Cluster Head answers the JOIN request; application-level data acceptance is a separate step.",
-    "LEAVE": "A node notifies its peer that it is leaving the association.",
-    "SENSOR_DATA": "A sensor-data fragment was processed by CLIVE's transport. This does not by itself prove FLAME consumed the observation.",
-    "SENSOR_ACK": "A sensor-data fragment acknowledgement was recorded at the transport layer.",
-    "MODEL_UPDATE": "A Cluster Head model fragment travelled over CLIVE; a single fragment is not a completed model exchange.",
-    "MODEL_ACK": "Acknowledgement traffic for a model-update fragment was recorded."
-  };
-  return details[type] || "A packet event was recorded by CLIVE. Its application-level outcome is not established here.";
-}
-
-function recentLinkActivity(a, b, untilTime, limit = 3) {
-  if (!state.relationships.available) return [];
-  const labels = {
-    flame_joined: "JOIN accepted by sensor",
-    flame_sensor_received: "CH accepted sensor observation",
-    flame_model_sent: "CH sent model-update event",
-    flame_model_received: "CH received model-update event",
-    flame_leave_sent: "LEAVE sent",
-  };
-  const rows=[];
-  for (const ev of state.relationships.events) {
-    if (ev.time_s > untilTime) break;
-    if (!((ev.source === a && ev.target === b) || (ev.source === b && ev.target === a))) continue;
-    rows.push({time: ev.time_s, text: `${labels[ev.action] || ev.action}: ${ev.source} → ${ev.target}`});
-    if (rows.length > limit) rows.shift();
-  }
-  return rows.reverse();
-}
-
-function linkDescription(edge) {
-  if (!state.meta) return null;
-  const specs = new Map(state.meta.nodes.map(n=>[n.name,n]));
-  const specA = specs.get(edge.a), specB = specs.get(edge.b);
-  const aRole = specA?.role === 1 ? "CH" : "SN";
-  const bRole = specB?.role === 1 ? "CH" : "SN";
-  const title = `${edge.a} → ${edge.b}`;
-  const time = `${state.currentTime.toFixed(2)} s`;
-  if (edge.kind === "packet") {
-    const ev = edge.event;
-    const type = packetName(ev.packet_type);
-    const dropped = ev.event === "delivery_drop";
-    const label = dropped ? "Delivery dropped" : "Packet received";
-    const facts = [
-      ["Recorded at", `${Number(ev.time_s).toFixed(3)} s`],
-      ["Packet", type],
-      ["Sequence", ev.sequence_number == null ? "Not logged" : String(ev.sequence_number)],
-      ["Distance", ev.distance_m == null ? "Not logged" : `${Number(ev.distance_m).toFixed(1)} m`],
-      ["RSSI", ev.rssi_dbm == null ? "Not logged" : `${Number(ev.rssi_dbm).toFixed(1)} dBm`],
-    ];
-    if (ev.reason) facts.push(["Reason", ev.reason]);
-    return {title, tag: label, tone: dropped ? "danger" : "success", mode: "Recorded packet · transport event",
-      meaning: dropped
-        ? `CLIVE recorded a delivery drop for ${type}. This packet did not arrive at the target through this attempt; FLAME may retransmit it later.`
-        : packetMeaning(ev),
-      nuance: dropped ? "A drop does not mean the complete sensor sample or model transfer failed."
-        : "A receive event confirms a NodeSocket delivery, not necessarily complete FLAME processing.",
-      facts, activity: []};
-  }
-  const pair = edge.pair;
-  const ab = Boolean(pair?.ab?.reachable), ba = Boolean(pair?.ba?.reachable);
-  const reachable = ab || ba;
-  const oneWay = ab !== ba;
-  const direction = ab && ba ? "Both directions reachable" : ab ? `${edge.a} → ${edge.b} only` : ba ? `${edge.b} → ${edge.a} only` : "Neither direction reachable";
-  const isSensor = aRole === "SN" || bRole === "SN";
-  const sensor = aRole === "SN" ? edge.a : edge.b;
-  const ch = aRole === "CH" ? edge.a : edge.b;
-  const facts = [
-    ["At", time],
-    ["Separation", `${Number(pair.distance).toFixed(1)} m`],
-    ["Radio", direction],
-    ["Approx. RSSI", `${Number(pair.ab.rssi).toFixed(1)} dBm`],
-    ["A → B loss estimate", ab ? `${(pair.ab.plr*100).toFixed(0)}%` : "Unreachable"],
-    ["B → A loss estimate", ba ? `${(pair.ba.plr*100).toFixed(0)}%` : "Unreachable"],
-  ];
-  if (edge.type === "radio") {
-    const possible = isSensor && aRole === "SN" && bRole === "SN";
-    return {title, mode: "Physical radio view", tag: "Radio-reachable", tone: "info",
-      meaning: possible
-        ? "CLIVE currently considers this Sensor Node-to-Sensor Node transmission physically possible. FLAME does not use SN-to-SN messaging."
-        : `CLIVE currently estimates that ${edge.a} can transmit to ${edge.b}. This is radio reachability, not a confirmed JOIN, model exchange, or active transfer.`,
-      nuance: "These values are modeled from position and radio settings at the current mobility tick; actual packet delivery may still fail.", facts};
-  }
-  if (edge.observed && !reachable) {
-    return {title, mode: "FLAME protocol view", tag: "Historical · out of range", tone: "danger",
-      meaning: isSensor
-        ? `A relationship between ${sensor} and ${ch} was recorded earlier, but neither direction is radio-reachable now. FLAME may have timed out the association.`
-        : `A model-exchange event between ${edge.a} and ${edge.b} was recorded earlier; their current positions are outside mutual radio range.`,
-      nuance: "Logged history does not prove current membership; timeout and LEAVE state require separate protocol evidence.", facts};
-  }
-  if (edge.observed && isSensor) {
-    const rel = edge.relation;
-    facts.push(["JOIN observed", rel?.joinedAt == null ? "Not observed" : `${rel.joinedAt.toFixed(2)} s`]);
-    facts.push(["Sensor accepted", rel?.confirmedAt == null ? "Not observed" : `${rel.confirmedAt.toFixed(2)} s`]);
-    facts.push(["Last sensor received", rel?.lastSeen == null ? "Not observed" : `${rel.lastSeen.toFixed(2)} s`]);
-    return {title, mode: "FLAME protocol view", tag: rel?.confirmedAt != null ? "Sensor data accepted" : "JOIN observed", tone: rel?.confirmedAt != null ? "success" : "info",
-      meaning: rel?.confirmedAt != null
-        ? `The ${ch} logged accepting sensor observations from ${sensor}. The latest accepted observation was at ${rel.lastSeen.toFixed(2)} s.`
-        : `${sensor} logged JOIN acceptance by ${ch}. CH-side acceptance of sensor observations has not yet been recorded.`,
-      nuance: oneWay ? "Only one radio direction is currently reachable; an ACK exchange may not succeed." : "This is recorded activity, not proof the nodes are transmitting at this exact instant.", facts};
-  }
-  if (edge.observed) {
-    if (edge.relation?.modelExchangeAt != null) facts.push(["Last exchange event", `${edge.relation.modelExchangeAt.toFixed(2)} s`]);
-    return {title, mode: "FLAME protocol view", tag: "CH model exchange observed", tone: "success",
-      meaning: `FLAME logged model-update activity between ${edge.a} and ${edge.b} during this run. They may exchange more model updates if radio-reachable.`,
-      nuance: "An exchange event does not guarantee that the whole fragmented model was reassembled or aggregated.", facts};
-  }
-  const message = isSensor
-    ? `${sensor} and ${ch} are role-compatible and within modeled radio range. This is a possible HELLO/JOIN or SENSOR_DATA path, not evidence of an actual association.`
-    : `${edge.a} and ${edge.b} are Cluster Heads within modeled radio range and could exchange models. No model exchange has been observed for this pair by this playback time.`;
-  return {title, mode: "FLAME protocol view", tag: "Possible link · not confirmed", tone: "muted",
-    meaning: message,
-    nuance: !state.relationships.available ? "Protocol-event logging is unavailable, so existing associations cannot be verified." :
-      "Dashed candidates are computed from distance and radio settings; no FLAME relationship is implied.", facts};
-}
-
-function describeLinkHtml(edge, pinned = false) {
-  const data = linkDescription(edge);
-  if (!data) return "";
-  const rows = data.facts.map(([k,v]) => `<div class="link-fact"><span>${escapeHtml(k)}</span><strong>${escapeHtml(v)}</strong></div>`).join("");
-  const activity = edge.kind === "packet" ? [] : recentLinkActivity(edge.a,edge.b,state.currentTime);
-  const activityHtml = activity.length
-    ? `<div class="link-activity"><strong>Recent recorded actions</strong>${activity.map(item=>`<div><time>${item.time.toFixed(2)}s</time><span>${escapeHtml(item.text)}</span></div>`).join("")}</div>`
-    : "";
-  return `<div class="link-card-top"><span class="link-card-eyebrow">${escapeHtml(data.mode)}</span>${pinned ? '<button id="closeLinkCard" type="button" aria-label="Close link details">×</button>' : ""}</div>
-    <div class="link-card-title">${escapeHtml(data.title)}</div>
-    <div class="link-card-status ${escapeHtml(data.tone)}">${escapeHtml(data.tag)}</div>
-    <p class="link-card-meaning">${escapeHtml(data.meaning)}</p>
-    <div class="link-card-facts">${rows}</div>
-    ${activityHtml}
-    <p class="link-card-note">${escapeHtml(data.nuance)}</p>`;
-}
-
-function showLinkHover(edge, clientX, clientY) {
-  const tooltip = $("linkTooltip");
-  if (!edge || !state.meta || !tooltip) { if (tooltip) tooltip.hidden = true; return; }
-  tooltip.innerHTML = describeLinkHtml(edge);
-  tooltip.hidden = false;
-  const rect = canvas.getBoundingClientRect();
-  const margin = 12;
-  let x = clientX - rect.left + 16, y = clientY - rect.top + 16;
-  const tw = tooltip.offsetWidth, th = tooltip.offsetHeight;
-  x = clamp(x, margin, Math.max(margin, rect.width - tw - margin));
-  y = clamp(y, margin, Math.max(margin, rect.height - th - margin));
-  tooltip.style.left = `${x}px`;
-  tooltip.style.top = `${y}px`;
-}
-
-function setPinnedLink(edge) {
-  state.pinnedLink = edge ? {kind: edge.kind, a: edge.a, b: edge.b, eventSeq: edge.event?.seq, eventTime: edge.event?.time_s} : null;
-  state.pinnedRenderKey = "";
-  updatePinnedLink();
-}
-
-function updatePinnedLink() {
-  const card = $("linkDetailCard");
-  if (!card) return;
-  if (!state.pinnedLink) { card.hidden = true; return; }
-  const pin = state.pinnedLink;
-  const edge = state.hitLinks.find(link => link.kind === pin.kind && link.a === pin.a && link.b === pin.b &&
-    (pin.kind !== "packet" || (link.event?.seq === pin.eventSeq && link.event?.time_s === pin.eventTime)));
-  if (!edge) {
-    // A packet marker can age out of the 1.75s window, and a candidate can
-    // disappear with mobility. Do not keep presenting stale details as current.
-    card.hidden = true;
-    state.pinnedLink = null;
-    state.pinnedRenderKey = "";
-    return;
-  }
-  const renderKey = `${state.relationshipRevision}|${state.currentTick}|${Math.floor(state.currentTime*4)}|${edge.a}|${edge.b}|${edge.kind}|${edge.event?.seq}`;
-  if (card.hidden === false && state.pinnedRenderKey === renderKey) return;
-  state.pinnedRenderKey = renderKey;
-  card.innerHTML = describeLinkHtml(edge, true);
-  card.hidden = false;
-  card.querySelector("#closeLinkCard")?.addEventListener("click", ()=>setPinnedLink(null));
+/** Optional map layer, never a second competing popover. */
+function drawLinkLabel(a, b, x1, y1, x2, y2, observed, confirmed) {
+  const text = `${a.name} ↔ ${b.name}`;
+  const x = (x1 + x2) / 2, y = (y1 + y2) / 2;
+  ctx.save();
+  ctx.font = '11px ui-sans-serif, system-ui';
+  const width = ctx.measureText(text).width + 17;
+  const height = 20;
+  ctx.fillStyle = 'rgba(10, 24, 36, .94)';
+  ctx.strokeStyle = observed ? (confirmed ? '#5de0a0' : '#5cc8ff') : '#697d91';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.roundRect(x-width/2, y-height/2, width, height, 5);
+  ctx.fill(); ctx.stroke();
+  ctx.fillStyle = '#e3eff8';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(text, x, y+.5);
+  ctx.restore();
 }
 
 function updateLinkExplanation(snapshot, selected, stats) {
@@ -865,9 +728,9 @@ function updateLinkExplanation(snapshot, selected, stats) {
   const notice = $("linkNotice"), summary = $("linkSummary");
   if (mode === "protocol") {
     const confirmed = [...snapshot.associations.values()].filter(r => r.confirmedAt != null).length;
-    summary.textContent = `${snapshot.associations.size} logged SN joins (${confirmed} CH-confirmed) · ${stats.backbone} reachable CH peer pairs · ${stats.candidates} selected-node candidates`;
+    summary.textContent = `${snapshot.associations.size} observed sensor associations · ${confirmed} confirmed by accepted sensor data`;
     notice.textContent = state.relationships.available
-      ? "Cyan: Sensor Node logged an accepted JOIN. Green: Cluster Head also accepted sensor data. Dashed: role-compatible radio candidate only. Red dashed: previously observed connection now outside radio range."
+      ? "Only recorded associations persist as lines. One recorded action is highlighted at a time; the full sequence remains in Event History."
       : "Association history unavailable: enable Protocol events in Experiment Studio before starting a run. Dashed candidates are not proof of JOIN or membership.";
   } else if (mode === "radio") {
     summary.textContent = selected ? `${stats.radio} outbound radio-reachable nodes from ${selected.name}` : "Select a node to inspect outbound radio range";
@@ -907,6 +770,93 @@ function currentDisplayPositions() {
 }
 
 
+/** Show one stage of the recorded protocol timeline at a time.
+ * HELLO is NEVER a link; only an actual JOIN request gets a temporary arrow.
+ * The persistent connections are drawn independently by replayRelationships().
+ */
+function drawRecentProtocolSignals(positions, point) {
+  const guidedEvent = state.guidedPlayback && state.guide.focus &&
+    state.currentTime >= state.guide.focus.time_s &&
+    state.currentTime - state.guide.focus.time_s <= CliveMapActivity.AGE_LIMIT
+    ? CliveMapActivity.fromEvent(state.guide.focus, state.currentTime) : null;
+  const event = guidedEvent || (state.relationships.available
+    ? CliveMapActivity.focus(state.relationships.events, state.currentTime, state.selectedNode)
+    : null);
+  const status = $("mapActivityStatus");
+  if (!event) {
+    const message = state.relationships.available
+      ? "Solid lines are recorded associations. Play or scrub to see individual HELLO, JOIN and disconnection events."
+      : "No recorded protocol activity is available for this run.";
+    if (status.dataset.key !== `idle:${message}`) {
+      status.dataset.stage = "idle";
+      status.dataset.key = `idle:${message}`;
+      status.innerHTML = `<span class="map-action-tag">NO RECENT ACTION</span><span class="map-action-description">${message}</span>`;
+    }
+    return;
+  }
+  const label = escapeHtml(event.label);
+  const eventKey = `${event.action}|${event.time_s}|${event.source}|${event.target}|${event.otherCount}`;
+  if (status.dataset.key !== eventKey) {
+    status.dataset.key = eventKey;
+    status.dataset.stage = event.stage;
+    status.innerHTML = `<span class="map-action-tag">${label}</span><span class="map-action-time">Recorded at ${event.time_s.toFixed(6)} s</span>`+
+      `<span class="map-action-description">${escapeHtml(event.description)}</span>`+
+      (event.otherCount ? `<span class="map-action-more">+${event.otherCount} other recent actions in Event History</span>` : "");
+  }
+
+  const byName = new Map(positions.map(n => [n.name,n]));
+  const source = byName.get(event.source), target = byName.get(event.target);
+  if (!source) return;
+  const [sx,sy] = point(source);
+  ctx.save();
+  ctx.lineWidth = 2.6;
+  ctx.strokeStyle = event.color;
+  ctx.fillStyle = event.color;
+  // Moderate pulse to distinguish ONE stage, without covering other nodes.
+  const pulse = 0.7 + .3*Math.sin(Math.max(0, event.age) * 5);
+  ctx.globalAlpha = .80 + .20*pulse;
+  if (event.stage === "hello") {
+    // A CH broadcast can reach many nodes. Drawing individual edges implies
+    // they all received it. A halo communicates announcement only.
+    ctx.beginPath(); ctx.arc(sx,sy,18+5*pulse,0,2*Math.PI); ctx.stroke();
+    ctx.beginPath();ctx.arc(sx,sy,11,0,2*Math.PI);ctx.stroke();
+  } else if (event.stage === "request" && target) {
+    // Explicitly directed sensor->CH JOIN: amber dashed arrow, NOT a link.
+    const [tx,ty] = point(target);
+    ctx.setLineDash([8,6]);
+    ctx.beginPath();ctx.moveTo(sx,sy);ctx.lineTo(tx,ty);ctx.stroke();
+    ctx.setLineDash([]);
+    drawArrow(sx,sy,tx,ty,.72,event.color,1.7);
+    ctx.beginPath();ctx.arc(sx,sy,12,0,2*Math.PI);ctx.stroke();
+  } else if (event.stage === "discovered") {
+    // HELLO received: mark the receiving SN only, never draw a JOIN arrow.
+    const receiver = target || source, node=byName.get(receiver);
+    if (node) {const [x,y]=point(node);ctx.beginPath();ctx.arc(x,y,13,0,2*Math.PI);ctx.stroke();}
+  } else if (event.stage === "accepted" || event.stage === "confirmed") {
+    ctx.beginPath();ctx.arc(sx,sy,15,0,2*Math.PI);ctx.stroke();
+    const x=sx+13,y=sy-13;
+    ctx.fillStyle="#153627";ctx.fillRect(x-8,y-9,18,18);
+    ctx.strokeStyle="#70e1a9";ctx.beginPath();ctx.moveTo(x-4,y);ctx.lineTo(x-1,y+4);ctx.lineTo(x+6,y-5);ctx.stroke();
+  } else if (event.stage === "exit") {
+    ctx.beginPath();ctx.arc(sx,sy,15,0,2*Math.PI);ctx.stroke();
+    ctx.beginPath();ctx.moveTo(sx+12,sy-18);ctx.lineTo(sx+22,sy-8);
+    ctx.moveTo(sx+22,sy-18);ctx.lineTo(sx+12,sy-8);ctx.stroke();
+  } else {
+    // A model transfer or aggregation is an observed CH-to-CH action, not a
+    // permanent association. Only draw a directed line with a recorded peer.
+    if ($("showModelFlow")?.checked && target &&
+        (event.stage === "model" || event.action === "flame_aggregated") &&
+        source.role === 1 && target.role === 1 && source.name !== target.name) {
+      const [tx,ty] = point(target);
+      ctx.lineWidth = 2.4;
+      ctx.beginPath();ctx.moveTo(sx,sy);ctx.lineTo(tx,ty);ctx.stroke();
+      if ($("showDirectionArrows")?.checked) drawArrow(sx,sy,tx,ty,.68,event.color,1.6);
+    }
+    ctx.beginPath();ctx.arc(sx,sy,15,0,2*Math.PI);ctx.stroke();
+  }
+  ctx.restore();
+}
+
 function drawTopology() {
   const rect = resizeCanvas(canvas, ctx);
   const w = rect.width, h = rect.height;
@@ -933,7 +883,6 @@ function drawTopology() {
   const selected = pos.get(state.selectedNode);
   const relationships = replayRelationships(state.currentTime);
   const stats = {backbone: 0, candidates: 0, radio: 0, traffic: 0};
-  state.hitLinks = [];
 
   if (state.linkMode === "protocol") {
     const seen = new Set();
@@ -952,8 +901,10 @@ function drawTopology() {
         for (let j = i + 1; j < chs.length; j++) {
           const a = chs[i], b = chs[j], key = [a.name, b.name].sort().join("|");
           const pair = radioPair(a, b, specs);
-          const exchanged = relationships.peers.has(key);
+          const exchanged = relationships.peers.has(key) &&
+            state.currentTime - relationships.peers.get(key) <= 3.0;
           if (drawLink(a, b, pair, point, {type: "backbone", observed: exchanged,
+            confirmed: ["flame_model_received", "flame_transfer_complete"].includes(relationships.peerDetails.get(key)?.action),
             emphasize: Boolean(selected && (selected.name === a.name || selected.name === b.name)),
             relation: exchanged ? {modelExchangeAt: relationships.peers.get(key)} : null}) &&
             (pair.ab.reachable || pair.ba.reachable)) stats.backbone++;
@@ -989,8 +940,6 @@ function drawTopology() {
       if (age < -0.10 || age > 1.75) continue;
       stats.traffic++;
       const dropped = event.event === "delivery_drop";
-      state.hitLinks.push({kind: "packet", a: a.name, b: b.name,
-        ax: x1, ay: y1, bx: x2, by: y2, event, priority: 6});
       const color = dropped ? "#ff6b7a" : event.packet_type === 4 ? "#aa9bff" : event.packet_type === 2 ? "#5cc8ff" : "#5de0a0";
       ctx.strokeStyle = dropped ? "rgba(255,107,122,.20)" : "rgba(143,161,181,.13)";
       ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke();
@@ -1004,6 +953,10 @@ function drawTopology() {
       }
     }
   }
+
+  // Map spotlight: one recorded action, no stacked HELLO/JOIN overlays.
+  if (state.linkMode === "protocol") drawRecentProtocolSignals(positions, point);
+  else { const banner = $("mapActivityStatus"); if (banner) { banner.dataset.stage = "idle"; banner.innerHTML = `<span class="map-action-tag">${state.linkMode === "radio" ? "RADIO VIEW" : state.linkMode === "traffic" ? "TRAFFIC VIEW" : "NODES ONLY"}</span><span class="map-action-description">Select FLAME protocol view to follow HELLO, JOIN and state changes.</span>`; } }
 
   for (const p of positions) {
     const [x, y] = point(p);
@@ -1028,11 +981,11 @@ function drawTopology() {
     }
   }
   updateLinkExplanation(relationships, selected, stats);
-  updatePinnedLink();
   $("canvasCorner").textContent = `${positions.filter(p => p.role === 1).length} CH · ${positions.filter(p => p.role !== 1).length} SN · ${state.frame.tick_time_s.toFixed(2)}s`;
-  $("timeReadout").textContent = `${state.currentTime.toFixed(2)} s`;
-  $("tickReadout").textContent = `tick ${state.frame.tick} @ ${state.frame.tick_time_s.toFixed(2)}s`;
+  $("timeReadout").textContent = `${state.currentTime.toFixed(6)} s`;
+  $("tickReadout").textContent = `position tick ${state.frame.tick} @ ${state.frame.tick_time_s.toFixed(3)}s`;
   $("timeSlider").value = state.currentTime;
+  if (document.activeElement !== $("exactTime")) $("exactTime").value = state.currentTime.toFixed(6);
 }
 
 function drawTrafficChart() {
@@ -1075,6 +1028,20 @@ function drawTrafficChart() {
   const cursorX = x(state.currentTime);
   tctx.strokeStyle = "rgba(255,255,255,.5)";
   tctx.beginPath(); tctx.moveTo(cursorX, padT); tctx.lineTo(cursorX, h - padB); tctx.stroke();
+  if (state.trafficHoverBucket != null) {
+    const hover = rows[state.trafficHoverBucket];
+    if (hover) {
+      const hx = x(hover.time_s);
+      tctx.strokeStyle = "rgba(92,200,255,.80)";
+      tctx.setLineDash([3, 4]);
+      tctx.beginPath(); tctx.moveTo(hx, padT); tctx.lineTo(hx, h - padB); tctx.stroke();
+      tctx.setLineDash([]);
+      for (const [key, color] of [["sent", "#ffd166"], ["received", "#5de0a0"], ["dropped", "#ff6b7a"]]) {
+        tctx.beginPath(); tctx.arc(x(hover.time_s), y(hover[key]), 3.5, 0, Math.PI * 2);
+        tctx.fillStyle = color; tctx.fill();
+      }
+    }
+  }
 
   const legend = [["TX", "#ffd166"], ["RX", "#5de0a0"], ["Drop", "#ff6b7a"]];
   let lx = w - 190;
@@ -1084,18 +1051,91 @@ function drawTrafficChart() {
   }
 }
 
+// Link animations use real RECEIVE / delivery-drop records independently of
+// the Events tab filter. A PROTOCOL filter must not hide radio traffic.
+async function refreshPacketMarkers() {
+  if (state.linkMode !== "traffic" || !state.run || !state.meta?.logging?.packet_events) {
+    if (!state.meta?.logging?.packet_events) state.packetEvents = [];
+    return;
+  }
+  if (state.packetRequestInFlight) return;
+  const run = state.run;
+  const timeS = state.currentTime;
+  const query = new URLSearchParams({
+    run, from_s: String(Math.max(0, timeS - 1.2)),
+    to_s: String(Math.min(state.meta.duration_s, timeS + .08)),
+    category: "traffic", limit: "180"
+  });
+  const key = query.toString();
+  if (key === state.lastPacketMarkerKey &&
+      performance.now() - state.lastPacketMarkerAt < 1000) return;
+  state.packetRequestInFlight = true;
+  try {
+    const data = await api(`/api/events?${query}`);
+    if (run !== state.run || Math.abs(timeS - state.currentTime) > 1.5) return;
+    state.packetEvents = data.events || [];
+    state.lastPacketMarkerKey = key;
+    state.lastPacketMarkerAt = performance.now();
+  } catch (error) {
+    console.error("Could not load traffic markers", error);
+  } finally {
+    state.packetRequestInFlight = false;
+  }
+}
+
+function hideTrafficTooltip() {
+  state.trafficHoverBucket = null;
+  trafficTooltip.hidden = true;
+  if (state.ui.activeTab === "trafficPanel") drawTrafficChart();
+}
+
+function updateTrafficTooltip(clientX, clientY) {
+  if (!state.timeline.length || !state.meta) {
+    hideTrafficTooltip();
+    return;
+  }
+  const rect = trafficCanvas.getBoundingClientRect();
+  const x = clientX - rect.left;
+  const y = clientY - rect.top;
+  const left = 42, right = 16, top = 18, bottom = 26;
+  if (x < left || x > rect.width - right || y < top || y > rect.height - bottom) {
+    hideTrafficTooltip();
+    return;
+  }
+  const duration = Math.max(.001, Number(state.meta.duration_s));
+  const hoveredTime = (x - left) / Math.max(1, rect.width - left - right) * duration;
+  const index = Math.floor(hoveredTime / state.trafficBucketS);
+  const bucket = state.timeline[index];
+  if (!bucket) { hideTrafficTooltip(); return; }
+  state.trafficHoverBucket = index;
+  const endS = Math.min(duration, bucket.time_s + state.trafficBucketS);
+  trafficTooltip.innerHTML = `<strong>${bucket.time_s.toFixed(1)}–${endS.toFixed(1)} seconds</strong>
+    <span class="traffic-tooltip-row tx">Sent (TX)<b>${fmtInt(bucket.sent)}</b></span>
+    <span class="traffic-tooltip-row rx">Received (RX)<b>${fmtInt(bucket.received)}</b></span>
+    <span class="traffic-tooltip-row drop">Drops<b>${fmtInt(bucket.dropped)}</b></span>`;
+  trafficTooltip.hidden = false;
+  const container = trafficCanvas.parentElement.getBoundingClientRect();
+  const tw = trafficTooltip.offsetWidth, th = trafficTooltip.offsetHeight;
+  trafficTooltip.style.left = `${clamp(clientX - container.left + 14, 6, Math.max(6, container.width - tw - 6))}px`;
+  trafficTooltip.style.top = `${clamp(clientY - container.top - th - 12, 6, Math.max(6, container.height - th - 6))}px`;
+  drawTrafficChart();
+}
+
+// Event-specific presentation lives in event_stream.js; this view only wires UI state.
 function renderEventTable() {
-  const filter = $("eventFilter").value;
-  let events = [...state.visibleEvents].sort((a, b) => b.time_s - a.time_s);
-  if (filter === "protocol") events = events.filter(e => e.stream === "protocol");
-  else if (filter !== "all") events = events.filter(e => e.event === filter);
-  events = events.slice(0, 160);
-  $("eventRows").innerHTML = events.map(e => {
-    const klass = e.event === "delivery_drop" || e.event === "local_drop" ? "drop" : e.event === "receive" ? "rx" : e.event === "transmit" || e.event === "scheduled_delivery" ? "tx" : "";
-    const link = [e.distance_m != null ? `${Number(e.distance_m).toFixed(1)}m` : null, e.rssi_dbm != null ? `${Number(e.rssi_dbm).toFixed(1)}dBm` : null].filter(Boolean).join(" · ") || "—";
-    const type = e.packet_type == null ? "—" : `${packetName(e.packet_type)}${e.sequence_number == null ? "" : ` / #${e.sequence_number}`}`;
-    return `<tr><td class="mono">${e.time_s >= 0 ? e.time_s.toFixed(3) : "—"}</td><td><span class="badge ${klass}">${escapeHtml(e.event)}</span></td><td>${escapeHtml(e.source || e.node || "—")}</td><td>${escapeHtml(e.target || (e.is_broadcast ? "broadcast" : "—"))}</td><td class="mono">${escapeHtml(type)}</td><td class="muted">${escapeHtml(link)}${e.reason ? ` · ${escapeHtml(e.reason)}` : ""}</td></tr>`;
-  }).join("") || `<tr><td colspan="6" class="muted">No events in this time window.</td></tr>`;
+  const result = state.eventResult || {};
+  const view = CliveEventStream.render(state.visibleEvents, {
+    filter: $("eventFilter").value,
+    search: $("eventSearch")?.value || "",
+    packetName,
+    escapeHtml,
+    preFiltered: true,
+  });
+  const matching = Number(result.matching_count ?? state.visibleEvents.length);
+  const hidden = Number(result.hidden_count ?? 0);
+  $("eventSummary").textContent = `${fmtInt(state.visibleEvents.length)} of ${fmtInt(matching)} recorded events` +
+    (hidden ? ` · ${fmtInt(hidden)} additional events in history` : "");
+  $("eventRows").innerHTML = view.html;
 }
 
 function renderNodeTable() {
@@ -1109,48 +1149,163 @@ function renderNodeTable() {
   }));
 }
 
+function nodeLinkStatus(node, other, specs) {
+  const a = specs.get(node.name), b = specs.get(other?.name);
+  if (!other || !a || !b) return {label: "Peer not in topology", tone: "muted"};
+  const distance = Math.hypot(node.x - other.x, node.y - other.y);
+  const tx = linkCondition(distance, a), rx = linkCondition(distance, b);
+  return {label: tx.reachable && rx.reachable ? "Two-way radio reachable" :
+    tx.reachable ? "Outgoing only (return path unavailable)" :
+    rx.reachable ? "Incoming only (outgoing unavailable)" : "Out of radio range",
+    tone: tx.reachable && rx.reachable ? "success" : "danger",
+    distance, tx, rx};
+}
+
+// Use the exact precomputed mobility trace to find the last two-way radio change.
+// This is a PHY observation, NOT an inferred FLAME JOIN or LEAVE.
+function lastRadioTransition(aName, bName) {
+  const trace = state.mobilityTrace;
+  if (!trace?.view || !state.meta) return null;
+  const ia = trace.node_names.indexOf(aName), ib = trace.node_names.indexOf(bName);
+  if (ia < 0 || ib < 0) return null;
+  const specs = new Map(state.meta.nodes.map(node => [node.name, node]));
+  const aSpec = specs.get(aName), bSpec = specs.get(bName);
+  const reachable = (tick) => {
+    const offset = trace.data_offset + tick * trace.node_count * 16;
+    const ax = trace.view.getFloat64(offset + ia * 16, true), ay = trace.view.getFloat64(offset + ia * 16 + 8, true);
+    const bx = trace.view.getFloat64(offset + ib * 16, true), by = trace.view.getFloat64(offset + ib * 16 + 8, true);
+    const distance = Math.hypot(ax-bx, ay-by);
+    return linkCondition(distance, aSpec).reachable && linkCondition(distance, bSpec).reachable;
+  };
+  const tick = Math.min(state.currentTick, trace.tick_count - 1);
+  if (tick < 0) return null;
+  const current = reachable(tick);
+  for (let earlier = tick - 1; earlier >= 0; earlier--) {
+    if (reachable(earlier) !== current) {
+      return {currentlyReachable: current, changedAt: (earlier + 1) * trace.tick_interval_s};
+    }
+  }
+  return {currentlyReachable: current, changedAt: null};
+}
+
+function radioChangeText(a, b) {
+  const transition = lastRadioTransition(a,b);
+  if (!transition || transition.changedAt == null) return "";
+  return transition.currentlyReachable
+    ? ` · two-way radio restored at ${transition.changedAt.toFixed(2)}s`
+    : ` · two-way radio lost at ${transition.changedAt.toFixed(2)}s`;
+}
+
+function connectionRow(label, peer, kind, detail) {
+  return `<div class="connection-row"><span class="connection-dot ${kind}"></span><div>
+    <strong>${escapeHtml(label)} <span class="mono">${escapeHtml(peer || "—")}</span></strong>
+    <small>${escapeHtml(detail)}</small></div></div>`;
+}
+
+function nodeHistoryHtml(snapshot, node) {
+  if (!state.relationships.available) return `<div class="selected-note">Connection tracking was not recorded for this run. New CLIVE runs write compact connection logs even when verbose packet logging is disabled.</div>`;
+  const events = CliveConnectionTracker.historyFor(snapshot, node, 14);
+  if (!events.length) return `<p class="selected-note">No JOIN, accepted sensor data, model-transfer or departure events recorded for this node yet.</p>`;
+  return `<ol class="connection-history">${events.map(ev => {
+    const peer = ev.source === node ? ev.target : ev.source;
+    const packet = ev.sequence_number == null ? "" : ` · packet seq #${ev.sequence_number}`;
+    const revision = ev.update_id == null ? "" : ` · model revision #${ev.update_id}`;
+    const reason = ev.reason ? ` · ${ev.reason}` : "";
+    return `<li><time>${Number(ev.time_s).toFixed(2)}s</time><div><strong>${escapeHtml(CliveConnectionTracker.label(ev))}</strong>
+      <small>${escapeHtml(peer)}${escapeHtml(packet)}${escapeHtml(revision)}${escapeHtml(reason)}</small></div></li>`;
+  }).join("")}</ol>`;
+}
+
 function updateSelectedNode() {
   const box = $("selectedNode");
   if (!state.selectedNode || !state.frame || !state.meta) {
     box.className = "selected-empty";
-    box.textContent = "Select a Cluster Head or Sensor Node on the map.";
+    box.textContent = "Select a Cluster Head or Sensor Node to see connection attempts, observed membership, radio reachability and disconnect history.";
     $("selectedRole").textContent = "None";
     return;
   }
   const positions = currentDisplayPositions();
   const p = positions.find(x => x.name === state.selectedNode);
   if (!p) return;
-  const spec = state.meta.nodes.find(x => x.name === state.selectedNode);
-  const metric = state.metrics?.nodes.find(x => x.node_name === state.selectedNode);
+  const specs = new Map(state.meta.nodes.map(n => [n.name,n]));
+  const positionsByName = new Map(positions.map(n => [n.name,n]));
+  const spec = specs.get(p.name);
+  const metric = state.metrics?.nodes.find(x => x.node_name === p.name);
   const rel = replayRelationships(state.currentTime);
-  const eligible = positions.filter(other => other.name !== p.name && roleCompatible(spec, state.meta.nodes.find(n => n.name === other.name)));
-  const outbound = eligible.filter(other => linkCondition(Math.hypot(p.x-other.x,p.y-other.y),spec).reachable);
-  const inbound = eligible.filter(other => {
-    const otherSpec = state.meta.nodes.find(n => n.name === other.name);
-    return linkCondition(Math.hypot(p.x-other.x,p.y-other.y),otherSpec).reachable;
-  });
-  const ownAssociation = rel.associations.get(p.name);
-  const associatedSensors = p.role === 1 ? [...rel.associations].filter(([sn,r]) => r.ch === p.name) : [];
-  const peers = p.role === 1 ? [...rel.peers].filter(([key]) => key.split("|").includes(p.name)) : [];
-  const jobs = p.role === 1 ? "Receives sensor observations · trains locally · aggregates and sends model updates" : "Collects observations · JOINs one Cluster Head · transmits SENSOR_DATA";
-  $("selectedRole").textContent = p.role === 1 ? "CLUSTER HEAD" : "SENSOR NODE";
+  const enabled = state.relationships.available;
+  const compatible = positions.filter(other => other.name !== p.name && roleCompatible(spec, specs.get(other.name)));
+  const nearby = compatible.map(other => ({other, radio: nodeLinkStatus(p, other, specs)}))
+    .filter(row => row.radio.tx?.reachable || row.radio.rx?.reachable)
+    .sort((a,b)=>a.radio.distance-b.radio.distance);
+  const isCh = p.role === 1;
+  const assoc = isCh ? null : rel.associations.get(p.name);
+  const pending = isCh ? null : rel.attempts.get(p.name);
+  const lastExit = isCh ? null : rel.lastExit.get(p.name);
+  const members = isCh ? [...rel.associations].filter(([,x])=>x.ch === p.name) : [];
+  const peerLinks = isCh ? [...rel.peers].filter(([key])=>key.split("|").includes(p.name)) : [];
+  let status = "Unknown — no recorded connection history", tone = "muted";
+  const connections = [];
+  if (!isCh) {
+    if (assoc) {
+      const radio = nodeLinkStatus(p, positionsByName.get(assoc.ch), specs);
+      const observedAt = assoc.confirmedAt == null ? "JOIN accepted; CH data acceptance not recorded" : `CH accepted data at ${assoc.lastSeen.toFixed(2)}s`;
+      status = radio.tx?.reachable && radio.rx?.reachable ? "JOIN accepted · radio reachable" : "JOIN accepted earlier · radio currently unavailable";
+      tone = radio.tone;
+      connections.push(connectionRow("Associated with", assoc.ch, tone, `${radio.label}${radioChangeText(p.name, assoc.ch)} · ${observedAt}`));
+    } else if (pending) {
+      status = "Trying to join"; tone = "warning";
+      const radio = nodeLinkStatus(p, positionsByName.get(pending.ch), specs);
+      connections.push(connectionRow("JOIN requested to", pending.ch, "warning",
+        `${pending.count} request(s), last at ${pending.at.toFixed(2)}s · ${radio.label}${radioChangeText(p.name, pending.ch)} · acceptance not recorded`));
+    } else if (lastExit) {
+      status = lastExit.action === "flame_join_pending_expired" ? "JOIN attempt expired" : "Disconnected (recorded)"; tone = "danger";
+      connections.push(connectionRow(lastExit.action === "flame_join_pending_expired" ? "Failed JOIN to" : "Previously connected to", lastExit.ch, "danger",
+        `Ended at ${lastExit.at.toFixed(2)}s · ${lastExit.reason}`));
+    } else if (enabled) {
+      status = "No JOIN recorded";
+    }
+  } else {
+    status = enabled ? `${members.length} observed sensor member(s)` : "Membership unknown (logging off)";
+    tone = members.length ? "success" : "muted";
+    for (const [sn, relation] of members) {
+      const radio = nodeLinkStatus(p, positionsByName.get(sn), specs);
+      connections.push(connectionRow("Sensor member", sn, radio.tone,
+        `${radio.label} · ${relation.confirmedAt == null ? "JOIN observed (not CH-confirmed)" : `last data accepted ${relation.lastSeen.toFixed(2)}s`}`));
+    }
+    for (const [key, lastAt] of peerLinks) {
+      const peer = key.split("|").find(name => name !== p.name);
+      const radio = nodeLinkStatus(p, positionsByName.get(peer), specs);
+      const detail = rel.peerDetails.get(key);
+      connections.push(connectionRow("CH model peer activity", peer, radio.tone,
+        `${radio.label} · ${CliveConnectionTracker.label({action:detail?.action})} at ${lastAt.toFixed(2)}s (not a persistent CH association)`));
+    }
+  }
+  const nearSummary = nearby.slice(0, 10).map(({other,radio}) =>
+    connectionRow("Radio candidate", other.name, "muted", `${radio.distance.toFixed(1)} m · ${radio.label} (not proof of association)`));
+  $("selectedRole").textContent = isCh ? "CLUSTER HEAD" : "SENSOR NODE";
   box.className = "selected-body";
   box.innerHTML = `<div class="selected-name">${escapeHtml(p.name)}</div>
-    <p class="role-description">${jobs}</p>
+    <div class="connection-status ${tone}">${escapeHtml(status)}</div>
+    <p class="role-description">${isCh ? "Coordinates sensors, trains locally and exchanges complete models with other Cluster Heads." : "Collects observations and requests association with a Cluster Head."}</p>
     <div class="kv">
-      <span>Address</span><strong class="mono">${escapeHtml(spec?.ip)}:${escapeHtml(spec?.port)}</strong>
+      <span>Playback time</span><strong>${state.currentTime.toFixed(2)}s</strong>
       <span>Position</span><strong>${p.x.toFixed(1)}, ${p.y.toFixed(1)} m</strong>
-      <span>TX range</span><strong>${spec?.max_tx_range_m ? Number(spec.max_tx_range_m).toFixed(1) + " m" : "RSSI-derived"}</strong>
-      <span>Eligible outbound reachable</span><strong>${outbound.length}</strong>
-      <span>Eligible inbound reachable</span><strong>${inbound.length}</strong>
-      <span>${p.role === 1 ? "Logged sensor associations" : "Logged association"}</span>
-      <strong>${!state.relationships.available ? "Unknown (logging off)" : p.role === 1 ? associatedSensors.length : (ownAssociation ? escapeHtml(ownAssociation.ch) : "Not observed")}</strong>
-      ${p.role === 1 ? `<span>Observed CH exchange peers</span><strong>${peers.length}</strong>` : `<span>CH-side accepted data</span><strong>${ownAssociation ? (ownAssociation.confirmedAt == null ? "Not yet observed" : "Yes") : "Unknown"}</strong>`}
-      <span>TX packets</span><strong>${metric ? fmtInt(metric.packets_sent) : "—"}</strong>
-      <span>RX packets</span><strong>${metric ? fmtInt(metric.packets_received) : "—"}</strong>
-      <span>Delivery drops</span><strong>${metric ? fmtInt(metric.delivery_drops) : "—"}</strong>
+      <span>Address</span><strong class="mono">${escapeHtml(spec?.ip)}:${escapeHtml(spec?.port)}</strong>
+      <span>Two-way/one-way radio peers</span><strong>${nearby.length}</strong>
+      <span>TX / RX (run totals)</span><strong>${metric ? fmtInt(metric.packets_sent)+" / "+fmtInt(metric.packets_received) : "—"}</strong>
     </div>
-    <div class="selected-note">Reachability is calculated from the current mobility tick. Logged relationships are historical observations; they do not guarantee a node is still associated or reachable.</div>`;
+    <section class="connection-section"><h4>Observed protocol connections / attempts</h4>
+      ${connections.length ? connections.join("") : `<p class="connection-empty">${enabled ? "No active or attempted protocol association observed at this playback time." : "No protocol history available for this older run."}</p>`}
+    </section>
+    <details class="connection-section"><summary>Nearby radio candidates (${nearby.length})</summary>
+      <p class="connection-help">Radio range is not the same as a FLAME connection.</p>
+      ${nearSummary.length ? nearSummary.join("") : `<p class="connection-empty">No nearby compatible radio peers.</p>`}
+      ${nearby.length > 10 ? `<small>${nearby.length - 10} more candidate(s) not shown.</small>` : ""}
+    </details>
+    <details class="connection-section"><summary>Full connection history</summary>
+      ${nodeHistoryHtml(rel, p.name)}
+      <p class="connection-help">Radio can break before FLAME detects a timeout. Use playback to inspect earlier states.</p>
+    </details>`;
 }
 
 function canvasNodeAt(clientX, clientY, maxDistance = 14) {
@@ -1170,7 +1325,11 @@ function canvasNodeAt(clientX, clientY, maxDistance = 14) {
 function updatePlayback(ts) {
   state.lastAnimationTs = ts;
   if (state.meta && state.playing) {
-    syncPlaybackTime(ts);
+    if (state.guidedPlayback && state.relationships.available) {
+      state.guide = CliveGuidedPlayback.advance(state.guide, ts, state.speed,
+        state.meta.duration_s, state.stageTimeline);
+      state.currentTime = state.guide.time;
+    } else syncPlaybackTime(ts);
     if (state.currentTime >= state.meta.duration_s) {
       state.currentTime = state.meta.duration_s;
       state.playing = false;
@@ -1185,17 +1344,21 @@ function updatePlayback(ts) {
 
   if (ts - state.lastEventRefreshWallMs > 750) {
     state.lastEventRefreshWallMs = ts;
-    refreshVisibleEvents();
+    // The event view and animated radio markers have different data needs.
+    if (state.ui.activeTab === "eventsPanel") refreshVisibleEvents();
+    if (state.linkMode === "traffic") refreshPacketMarkers();
   }
-  drawTopology();
-  drawTrafficChart();
-  if (state.pointerAt && !state.pointer.active && ts - state.lastHoverRefreshTs > 250) {
-    state.lastHoverRefreshTs = ts;
-    const {x,y} = state.pointerAt;
-    if (!canvasNodeAt(x,y,7)) {
-      state.hoverLink = hitLinkAt(x,y);
-      showLinkHover(state.hoverLink,x,y);
-    }
+  // Canvas drawing is expensive at high node counts. Playback needs smooth
+  // motion, but a paused recording does not need 60 full redraws per second.
+  const topologyInterval = state.playing ? 33 : 125;
+  const trafficInterval = state.playing ? 100 : 500;
+  if (ts - state.lastTopologyDrawAt >= topologyInterval) {
+    state.lastTopologyDrawAt = ts;
+    drawTopology();
+  }
+  if (ts - state.lastTrafficDrawAt >= trafficInterval) {
+    state.lastTrafficDrawAt = ts;
+    if (state.ui.activeTab === "trafficPanel") drawTrafficChart();
   }
   requestAnimationFrame(updatePlayback);
 }
@@ -1215,7 +1378,8 @@ async function periodic() {
     }
   } finally {
     state.periodicBusy = false;
-    setTimeout(periodic, 1500);
+    const active = state.meta?.manifest?.status === "running";
+    setTimeout(periodic, active ? 1500 : 6000);
   }
 }
 
@@ -1230,9 +1394,13 @@ $("runSelect").addEventListener("change", async e => {
   state.currentTick = -1;
   state.metrics = null;
   state.timeline = [];
+  state.packetEvents = [];
+  state.lastPacketMarkerKey = "";
+  state.trafficHoverBucket = null;
+  trafficTooltip.hidden = true;
   state.frameRequestKey = null;
   state.selectedNode = null;
-  state.hoverLink = null; state.pinnedLink = null;
+  state.guide = CliveGuidedPlayback.create();
   resetRelationships();
   resetView();
   await refreshMeta();
@@ -1241,7 +1409,7 @@ $("runSelect").addEventListener("change", async e => {
 $("playButton").addEventListener("click", () => {
   if (!state.meta || !state.mobilityTrace) return;
   if (state.playing) {
-    syncPlaybackTime();
+    if (!state.guidedPlayback) syncPlaybackTime();
     state.playing = false;
     state.playAnchorWallMs = null;
   } else {
@@ -1250,21 +1418,62 @@ $("playButton").addEventListener("click", () => {
       setFrameFromTrace(true);
     }
     state.playing = true;
+    if (state.guidedPlayback) {
+      const now = performance.now();
+      // Resume the same recorded action if paused mid-stage. A fresh seek would
+      // skip additional actions sharing its exact timestamp.
+      state.guide = state.guide.focus && Math.abs(state.guide.time - state.currentTime) < 1e-7
+        ? CliveGuidedPlayback.resume(state.guide, now)
+        : CliveGuidedPlayback.seek(state.stageTimeline, state.currentTime, now);
+    }
     rebasePlaybackClock();
   }
   $("playButton").textContent = state.playing ? "❚❚ Pause" : "▶ Play";
 });
+$("guidedPlayback").addEventListener("change", e => {
+  state.guidedPlayback = Boolean(e.target.checked);
+  state.guide = CliveGuidedPlayback.seek(state.stageTimeline, state.currentTime, performance.now());
+  if (state.playing) rebasePlaybackClock();
+});
+$("nextAction").addEventListener("click", () => {
+  state.playing = false;
+  state.playAnchorWallMs = null;
+  $("playButton").textContent = "▶ Play";
+  state.guide = CliveGuidedPlayback.next(state.guide, state.stageTimeline);
+  state.currentTime = state.guide.time;
+  $("nextAction").disabled = state.guide.cursor >= state.stageTimeline.length - 1;
+  setFrameFromTrace(true);
+  drawTopology();
+  refreshVisibleEvents();
+});
+$("exactTime").addEventListener("change", (e) => {
+  if (!state.meta) return;
+  const value = Number(e.target.value);
+  if (!Number.isFinite(value)) return;
+  state.currentTime = clamp(value, 0, state.meta.duration_s);
+  state.guide = CliveGuidedPlayback.seek(state.stageTimeline, state.currentTime, performance.now());
+  state.currentTick = -1;
+  setFrameFromTrace(true);
+  if (state.playing) rebasePlaybackClock();
+  drawTopology();
+  refreshVisibleEvents();
+});
 $("timeSlider").addEventListener("input", e => {
   state.currentTime = Number(e.target.value);
+  state.guide = CliveGuidedPlayback.seek(state.stageTimeline, state.currentTime, performance.now());
+  $("nextAction").disabled = state.guide.cursor >= state.stageTimeline.length - 1;
   state.currentTick = -1;
   setFrameFromTrace(true);
   if (state.playing) rebasePlaybackClock();
   refreshVisibleEvents();
 });
 $("speedSelect").addEventListener("change", e => {
-  if (state.playing) syncPlaybackTime();
+  if (state.playing && !state.guidedPlayback) syncPlaybackTime();
   state.speed = Number(e.target.value);
-  if (state.playing) rebasePlaybackClock();
+  if (state.playing) {
+    rebasePlaybackClock();
+    if (state.guidedPlayback) state.guide = CliveGuidedPlayback.resume(state.guide, performance.now());
+  }
 });
 function selectLinkMode(mode) {
   if (!["protocol", "radio", "traffic", "none"].includes(mode)) return;
@@ -1275,11 +1484,9 @@ function selectLinkMode(mode) {
     btn.classList.toggle("active", active);
     btn.setAttribute("aria-pressed", active ? "true" : "false");
   });
-  state.hoverLink = null;
-  setPinnedLink(null);
-  showLinkHover(null);
   updateSelectedNode();
   drawTopology();
+  if (mode === "traffic") refreshPacketMarkers();
 }
 $("linkMode").addEventListener("change", e => selectLinkMode(e.target.value));
 document.querySelectorAll(".mode-button[data-mode]").forEach(btn => btn.addEventListener("click", () => selectLinkMode(btn.dataset.mode)));
@@ -1290,11 +1497,37 @@ window.addEventListener("click", e => {
 $("showBackbone").addEventListener("change", () => drawTopology());
 $("showCandidates").addEventListener("change", () => drawTopology());
 $("showLabels").addEventListener("change", () => drawTopology());
-$("eventFilter").addEventListener("change", renderEventTable);
+$("showLinkLabels").addEventListener("change", () => drawTopology());
+$("showDirectionArrows").addEventListener("change", () => drawTopology());
+$("showModelFlow").addEventListener("change", () => drawTopology());
+function requestEventFilterUpdate() {
+  // Clear rows from the old category immediately. Large JSONL queries may take
+  // a moment; displaying old TRANSMIT rows under RECEIVE looks like a broken tab.
+  $("eventRows").innerHTML = '<tr><td colspan="6" class="muted">Loading matching recorded events…</td></tr>';
+  $("eventSummary").textContent = "Reading recorded history…";
+  state.lastEventQuerySignature = "";
+  refreshVisibleEvents();
+}
+$("eventFilter").addEventListener("change", requestEventFilterUpdate);
+let eventSearchDebounce = null;
+$("eventSearch").addEventListener("input", () => {
+  clearTimeout(eventSearchDebounce);
+  eventSearchDebounce = setTimeout(requestEventFilterUpdate, 250);
+});
+
+trafficCanvas.addEventListener("pointermove", e => updateTrafficTooltip(e.clientX, e.clientY));
+trafficCanvas.addEventListener("pointerleave", hideTrafficTooltip);
+trafficCanvas.addEventListener("pointercancel", hideTrafficTooltip);
 $("nodeSearch").addEventListener("input", renderNodeTable);
 document.querySelectorAll(".tab-button[data-target]").forEach((button) => button.addEventListener("click", () => setWorkbenchTab(button.dataset.target)));
 $("sidebarToggle").addEventListener("click", () => setSidebarCollapsed(!state.ui.sidebarCollapsed));
 $("canvasFocusToggle").addEventListener("click", () => setFocusMode(!state.ui.focusMode));
+$("toggleDiagnostics").addEventListener("click", ()=>{
+ const shown=document.body.classList.toggle("show-diagnostics");
+ $("toggleDiagnostics").setAttribute("aria-pressed",shown?"true":"false");
+ $("toggleDiagnostics").textContent=shown?"Hide extra metrics":"Show extra metrics";
+ drawTrafficChart();
+});
 
 $("zoomIn").addEventListener("click", () => setZoom(state.view.zoom * 1.25));
 $("zoomOut").addEventListener("click", () => setZoom(state.view.zoom / 1.25));
@@ -1323,28 +1556,18 @@ canvas.addEventListener("pointerdown", e => {
 });
 canvas.addEventListener("pointermove", e => {
   if (!state.pointer.active) {
-    state.pointerAt = {x:e.clientX, y:e.clientY};
-    const link = hitLinkAt(e.clientX, e.clientY);
-    // Actual node glyphs remain selectable, but links can be inspected even when
-    // nodes are closely clustered in the field.
-    const node = canvasNodeAt(e.clientX, e.clientY, link ? 7 : 14);
+    const node = canvasNodeAt(e.clientX, e.clientY, 14);
     state.hoveredNode = node;
     const tooltip = $("nodeTooltip");
     if (node) {
-      state.hoverLink = null;
-      showLinkHover(null);
       const spec = state.meta?.nodes.find(n => n.name === node);
-      tooltip.innerHTML = `<strong>${escapeHtml(node)}</strong><span>${spec?.role === 1 ? "Cluster Head" : "Sensor Node"}</span><small>Click to inspect role, observed associations, and traffic.</small>`;
+      tooltip.innerHTML = `<strong>${escapeHtml(node)}</strong><span>${spec?.role === 1 ? "Cluster Head" : "Sensor Node"}</span><small>Click to inspect its membership and traffic.</small>`;
       tooltip.hidden = false;
       const rect = canvas.getBoundingClientRect();
       tooltip.style.left = `${clamp(e.clientX - rect.left + 16, 8, Math.max(8,rect.width-240))}px`;
       tooltip.style.top = `${clamp(e.clientY - rect.top + 16, 8, Math.max(8,rect.height-110))}px`;
-    } else {
-      tooltip.hidden = true;
-      state.hoverLink = link;
-      showLinkHover(state.hoverLink, e.clientX, e.clientY);
-    }
-    canvas.style.cursor = node || state.hoverLink ? "pointer" : "grab";
+    } else tooltip.hidden = true;
+    canvas.style.cursor = node ? "pointer" : "grab";
     return;
   }
   if (e.pointerId !== state.pointer.id) return;
@@ -1362,23 +1585,16 @@ function finishPointer(e) {
   canvas.classList.remove("panning");
   try { canvas.releasePointerCapture(e.pointerId); } catch (_) { /* already released */ }
   if (!moved) {
-    const edge = hitLinkAt(e.clientX, e.clientY);
-    const node = canvasNodeAt(e.clientX, e.clientY, edge ? 7 : 14);
-    if (node) {
-      state.selectedNode = node;
-      setPinnedLink(null);
-    } else {
-      if (edge) setPinnedLink(edge);
-      else { state.selectedNode = null; setPinnedLink(null); }
-    }
+    const node = canvasNodeAt(e.clientX, e.clientY, 14);
+    state.selectedNode = node || null;
     updateSelectedNode();
   }
 }
-canvas.addEventListener("pointerleave", () => { state.pointerAt=null; state.hoveredNode = null; state.hoverLink = null; $("nodeTooltip").hidden = true; showLinkHover(null); });
+canvas.addEventListener("pointerleave", () => { state.hoveredNode = null; $("nodeTooltip").hidden = true; });
 canvas.addEventListener("pointerup", finishPointer);
 canvas.addEventListener("pointercancel", finishPointer);
 window.addEventListener("resize", () => { drawTopology(); drawTrafficChart(); });
-window.addEventListener("keydown", e=> { if(e.key==="Escape") { setPinnedLink(null); $("layerMenu").open=false; } });
+window.addEventListener("keydown", e=> { if(e.key==="Escape") $("layerMenu").open=false; });
 
 (async function start() {
   setSidebarCollapsed(false);

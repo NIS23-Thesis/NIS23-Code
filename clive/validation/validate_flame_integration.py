@@ -26,7 +26,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix='clive-flame-integration-') as folder:
         p = subprocess.run([
             sys.executable, str(ROOT / 'clive.py'),
-            '--scenario', str(ROOT / 'configs/demos/flame_smoke.json'),
+            '--scenario', str(ROOT / 'configs/demos/flame-synthetic-transport-and-aggregation-smoke.json'),
             '--results', str(Path(folder) / 'results'),
         ], cwd=ROOT, capture_output=True, text=True, timeout=70)
         if p.returncode:

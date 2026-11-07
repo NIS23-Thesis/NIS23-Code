@@ -77,7 +77,7 @@ class SensorPromotionTest(unittest.TestCase):
 
 class ServerValidationTest(unittest.TestCase):
     def test_schema_and_manual_nodes(self):
-        c=json.loads((CLIVE/'configs/demos/flame_smoke.json').read_text())
+        c=json.loads((CLIVE/'configs/demos/flame-synthetic-transport-and-aggregation-smoke.json').read_text())
         self.assertEqual(validated_scenario(c)['num_sn'],4)
         c['mobility']['manual_positions']['SN-4']=[-1,0]
         with self.assertRaises(ValueError):validated_scenario(c)
@@ -86,7 +86,7 @@ class ServerValidationTest(unittest.TestCase):
         with self.assertRaises(ValueError):validated_scenario(c)
 
     def test_invalid_top_level_and_limits(self):
-        c=json.loads((CLIVE/'configs/demos/flame_smoke.json').read_text());c['bad']=1
+        c=json.loads((CLIVE/'configs/demos/flame-synthetic-transport-and-aggregation-smoke.json').read_text());c['bad']=1
         with self.assertRaises(ValueError):validated_scenario(c)
         c.pop('bad');c['num_ch']=201
         with self.assertRaises(ValueError):validated_scenario(c)
@@ -116,7 +116,7 @@ class ServerValidationTest(unittest.TestCase):
                 for _ in range(70):
                     try:status,b=request('/api/bootstrap');break
                     except Exception:time.sleep(.1)
-                else: self.fail('Control center failed to start: '+proc.stderr.read().decode())
+                else: self.fail(f'Control center did not answer /api/bootstrap; process_status={proc.poll()}')
                 self.assertEqual(status,200)
                 self.assertTrue(b['presets']);self.assertIn('flame',b['defaults'])
                 # The entire frontend must be served by the same backend.
@@ -124,7 +124,7 @@ class ServerValidationTest(unittest.TestCase):
                     self.assertIn(b'CLIVE',page.read())
                 with urlopen(base+'/app.js',timeout=3) as page:
                     self.assertIn(b'function renderSettings',page.read())
-                s=json.loads((CLIVE/'configs/demos/flame_smoke.json').read_text())
+                s=json.loads((CLIVE/'configs/demos/flame-synthetic-transport-and-aggregation-smoke.json').read_text())
                 s['num_ch']=1;s['num_sn']=1
                 s['runtime']['duration_s']=2.2
                 s['runtime']['startup_delay_s']=.5

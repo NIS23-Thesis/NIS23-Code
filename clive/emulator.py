@@ -8,6 +8,8 @@ one shared experiment epoch.
 from __future__ import annotations
 
 import multiprocessing as mp
+import json
+from pathlib import Path
 from multiprocessing.connection import wait as wait_connections
 import os
 import tempfile
@@ -48,7 +50,9 @@ class Emulator:
                     by_type[str(packet_type)][name] += values.get(name, 0)
         return {
             "schema_version": 5,
-            "success": all(row["success"] for row in nodes.values()),
+            "success": all(row["success"] for row in nodes.values()),  # legacy: process completion only
+            "execution_success": all(row["success"] for row in nodes.values()),
+            "protocol_success": None,  # not proven by OS process exit status
             "totals": totals,
             "by_packet_type": {key: dict(value) for key, value in sorted(by_type.items())},
             "nodes": nodes,
@@ -57,6 +61,54 @@ class Emulator:
                 "actual modeled radio emissions; kernel_datagrams_sent = successful kernel "
                 "sendto calls (not verified delivery); delivery_drops = per-recipient modeled loss"
             ),
+        }
+
+    def _flame_outcome(self):
+        """Integration-only outcome summary from final adapter artifacts.
+
+        The CLIVE `success` field means workers exited successfully. Do not use it
+        as proof that model transfers or learning succeeded.
+        """
+        details = {}
+        for file in sorted((Path(self.run_dir) / "flame").glob("*.json")):
+            try:
+                row = json.loads(file.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            details[file.stem] = row
+        heads = [row for row in details.values() if row.get("role") == "CH"]
+        statuses = [row.get("model_transfer_summary", {}) for row in heads]
+        count = lambda key: sum(int(s.get(key, 0)) for s in statuses)
+        started = count("started_versions")
+        completed = count("completed_versions")
+        failed = count("failed_versions")
+        unfinished = count("unfinished_versions")
+        real_training = bool(heads) and all(
+            row.get("workload", {}).get("real_neural_network_training") is True for row in heads
+        )
+        evaluated = {
+            row["node"]: row["model_evaluation"] for row in heads
+            if row.get("model_evaluation", {}).get("status") == "ok"
+            and "accuracy" in row["model_evaluation"]
+        }
+        accuracy_values = [value["accuracy"] for value in evaluated.values()]
+        eval_errors = {
+            row["node"]: row["model_evaluation"].get("reason")
+            for row in heads if row.get("model_evaluation", {}).get("status") == "error"
+        }
+        return {
+            "available": bool(heads), "trainer": (heads[0].get("workload", {}).get("trainer") if heads else None),
+            "real_neural_network_training": real_training,
+            "final_mnist_accuracy_mean": (sum(accuracy_values) / len(accuracy_values)) if accuracy_values else None,
+            "final_mnist_accuracy_by_ch": {node: v["accuracy"] for node, v in evaluated.items()},
+            "final_mnist_accuracy_status": ("measured" if accuracy_values else "not_measured"),
+            "model_evaluation_errors": eval_errors,
+            "local_training_events": sum(int(row.get("counters", {}).get("trained", 0)) for row in heads),
+            "model_updates_aggregated": sum(int(row.get("counters", {}).get("aggregated", 0)) for row in heads),
+            "model_transfers_started": started, "model_transfers_completed": completed,
+            "model_transfers_failed": failed, "model_transfers_unfinished": unfinished,
+            "model_delivery_success": (failed == 0 and unfinished == 0 and completed == started) if started else None,
+            "note": "Model transfer status is sender-confirmed ACK completion, not model accuracy or convergence.",
         }
 
     def run(self):
@@ -223,9 +275,19 @@ class Emulator:
             missing = [node.name for node in nodes if node.name not in metrics_by_node]
             if missing:
                 raise RuntimeError(f"missing final metrics from workers: {missing}")
-            atomic_json(os.path.join(self.run_dir, "metrics.json"), self._aggregate_metrics(metrics_by_node))
+            summary = self._aggregate_metrics(metrics_by_node)
+            outcome = self._flame_outcome() if self.protocol_class_path == "flame_protocol:FlameProtocol" else None
+            summary["flame_outcome"] = outcome
+            summary["protocol_success"] = (outcome or {}).get("model_delivery_success")
+            summary["status_explanation"] = (
+                "success/execution_success: worker processes exited without error. "
+                "protocol_success: only sender-confirmed MODEL_UPDATE completion if transfers occurred. "
+                "Neither field proves ML convergence."
+            )
+            atomic_json(os.path.join(self.run_dir, "metrics.json"), summary)
 
-            manifest.update(success=True, status="complete", completed_at=time.time())
+            manifest.update(success=True, status="complete", completed_at=time.time(),
+                            execution_success=True, protocol_success=summary["protocol_success"])
         except BaseException:
             manifest.update(status="failed", error=traceback.format_exc())
             raise

@@ -18,7 +18,7 @@ This project is based on `NIS23-CLIVEv2-FLAME-GUI-first-sensor-fixed.zip`. The f
 - **Shared class-sample cache:** `clive/mnist_cache.py` creates ten class-specific binary shards in `mnist/.clive-mnist-cache/`. This operation happens once before launching nodes; shards retain the original MNIST row order. Each sensor reads only the chosen 784-byte images and appends its original digit byte, using the **same RNG seed and random picks**. Cache reuses source metadata and verifies shard lengths, and supports locking and atomic writes. Cache files are excluded from the release ZIP; they are regenerated locally on first use (~47 MB of disk space, independent of node count).
 - **Optional radio thread:** `runtime.radio_execution` accepts `process` (the unchanged default) or `thread`. Both call the same `_radio_worker_main` and `_RadioEngine` and use the same UDP traffic path, packet-level calculations, counters, and token buckets. `thread` runs within each Node process and avoids a second Python interpreter. It shares a GIL, so high CPU use may alter scheduling accuracy. Use `process` mode for timing baselines unless you have validated the equivalence under your actual workload.
 - **GUI:** `runtime.radio_execution` appears as a dropdown in General settings. Existing GUI controls (Save/Validate/Start/Stop) remain available.
-- **Capacity preset:** `configs/demos/capacity_20ch_200sn_memory.json` can be loaded and modified from the GUI. It uses **actual MNIST samples** but the lightweight `mean_pixel` testing trainer; **it does not test real PyTorch FL, model exchange, or accuracy**. Its isolated clusters are deliberate so the trial measures 220-node overhead and the first observation/ACK path.
+- **Capacity preset:** `configs/demos/capacity-220-nodes-transport-only-no-neural-training.json` can be loaded and modified from the GUI. It uses **actual MNIST samples** but the lightweight `mean_pixel` testing trainer; **it does not test real PyTorch FL, model exchange, or accuracy**. Its isolated clusters are deliberate so the trial measures 220-node overhead and the first observation/ACK path.
 
 ## Measurements
 
@@ -56,7 +56,7 @@ The test container is memory-constrained (4 GiB and no swap). Parallel worker cr
 ./start_gui.sh
 ```
 
-Open the browser GUI. In **General**, choose the number of CH/SN, select **Radio Execution → Thread** to save memory, and load the `capacity_20ch_200sn_memory` preset for a tested transport capacity example. Other runtime, radio, mobility, and FLAME settings remain editable from the GUI.
+Open the browser GUI. In **General**, choose the number of CH/SN, select **Radio Execution → Thread** to save memory, and load the `capacity-220-nodes-transport-only-no-neural-training` preset for a tested transport capacity example. Other runtime, radio, mobility, and FLAME settings remain editable from the GUI.
 
 For automated verification from the extracted project root:
 
@@ -64,7 +64,7 @@ For automated verification from the extracted project root:
 python -m pytest -q tests flame
 python clive/validation/run_all.py
 python benchmarks/profile_run.py --output benchmarks/my-run.json -- \
-  python clive/clive.py --scenario clive/configs/demos/capacity_20ch_200sn_memory.json --results results
+  python clive/clive.py --scenario clive/configs/demos/capacity-220-nodes-transport-only-no-neural-training.json --results results
 ```
 
 **Be careful with large trials on low-memory machines.** The monitor reports whole-cgroup memory and cannot attribute unrelated use to an experiment. For final thesis timing metrics, repeat comparable experiments with the original process backend, check dropped events and ACK failures, and validate timing overhead; the threaded backend may become CPU-bound.

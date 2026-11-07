@@ -450,6 +450,22 @@ class _RadioEngine:
 
         reachable_count = sum(1 for link in links if link[2])
         if reachable_count == 0:
+            if links:
+                # Out of range means the RADIO TRANSMITTED but nobody heard it.
+                # Record one emission/energy cost and N recipient delivery failures.
+                # The TX energy estimate cannot exceed the configured radio range
+                # simply because a peer was placed arbitrarily far away.
+                req["emitted"] = True
+                tx_distance = self.cfg.tx_range_m(self.spec)
+                counters = {"packets_sent": 1, "bits_sent": req["bits"],
+                            "energy_sent_j": energy_tx(req["bits"], tx_distance, self.cfg)}
+                if self._packet_debug:
+                    self._event(req, "transmit", counters,
+                                energy_distance_m=tx_distance,
+                                energy_distance_policy="configured_radio_range_no_reachable_receiver",
+                                mobility_tick=tick, bandwidth_bps=0.0)
+                else:
+                    self.metrics.count(header=req["header"], counters=counters)
             if not links:
                 self.metrics.count(header=req["header"], counters={"packets_dropped": 1})
                 if self._packet_debug:

@@ -46,13 +46,16 @@ class Node:
     in a separate child process, so the node runtime itself has no worker-thread GIL contention.
     """
 
-    def __init__(self, spec, plan, node_socket, protocol_class=NullProtocol, *, event_path=None, stop_event=None, results_dir=None):
+    def __init__(self, spec, plan, node_socket, protocol_class=NullProtocol, *, event_path=None, connection_path=None, stop_event=None, results_dir=None):
         self.spec = spec
         self.results_dir = results_dir
         self.plan = plan
         self.socket = node_socket
         self.stop_event = stop_event
         self.events = EventLog(event_path)
+        # Small connection-history log for FLAME runs with verbose events disabled.
+        # This is observational; it does not affect emulated packets or protocol state.
+        self.connection_events = EventLog(connection_path)
         self._closing = False
         self.protocol = None
         try:
@@ -61,6 +64,7 @@ class Node:
             self.protocol = protocol_class(self)
         except BaseException:
             self.events.close()
+            self.connection_events.close()
             raise
 
     def elapsed(self):
@@ -150,6 +154,7 @@ class Node:
                     self.socket.close()
                 finally:
                     self.events.close()
+                    self.connection_events.close()
         return self.socket.metrics.snapshot()
 
 
@@ -191,12 +196,19 @@ def run_node(node_name, plan_path, results_dir, protocol_class_path=None, contro
             plan.config.seed,
             log_path=packet_path,
         )
+        connection_path = None
+        if not plan.logging_config.protocol_events and protocol_class_path and protocol_class_path.endswith(":FlameProtocol"):
+            connection_dir = os.path.join(results_dir, "debug", "connections")
+            os.makedirs(connection_dir, exist_ok=True)
+            connection_path = os.path.join(connection_dir, f"{node_name}.jsonl")
+
         node = Node(
             spec,
             plan,
             node_socket,
             _load_protocol_class(protocol_class_path),
             event_path=event_path,
+            connection_path=connection_path,
             stop_event=stop_event,
             results_dir=results_dir,
         )

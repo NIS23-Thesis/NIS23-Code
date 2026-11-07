@@ -67,10 +67,17 @@ def test_relationship_reconstruction():
         assert any(e['event'] == 'scheduled_delivery' and e['target'] == 'SN-1' for e in events)
         # Subsequent refreshes cannot manufacture duplicate relationships.
         assert len(view.relationships()['events']) == 5
-        # Logging disabled: observed associations must be unknown, not 'none'.
+        # Existing on-disk protocol logs remain inspectable even if a setting
+        # is later disabled: artifact presence, not only config, determines availability.
         plan.logging_config.protocol_events = False
         view._plan = plan
-        assert view.relationships()['available'] is False
+        assert view.relationships()['available'] is True
+        # If neither protocol logging nor historical files exist, status is unknown.
+        for path in (run / "debug/events").glob("*.jsonl"):
+            path.unlink()
+        blank = RunData(run)
+        blank._plan = plan
+        assert blank.relationships()['available'] is False
         print('Visualizer relationship provenance, sorting, directionality, and replay: PASS')
 
 

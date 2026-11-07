@@ -113,7 +113,11 @@ def class_samples(archive_path, digit, rng, count, *, cache_path=None):
     cache = prepare_mnist_cache(archive_path, cache_path)
     manifest = json.loads((cache / 'manifest.json').read_text())
     n = manifest['counts'][str(digit)]
-    picks = [rng.randrange(n) for _ in range(count)]
+    if count > n:
+        raise ValueError(f"Requested {count} unique class-{digit} images, but only {n} exist")
+    # Without replacement: source exhaustion now means unique MNIST records,
+    # not just a finite number of draws that may contain hidden duplicates.
+    picks = rng.sample(range(n), count)
     with (cache / f'digit-{digit}.bin').open('rb') as stream:
         result = []
         for index in picks:

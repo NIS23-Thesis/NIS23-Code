@@ -1,0 +1,54 @@
+{
+  "num_ch": 7,
+  "num_sn": 50,
+  "runtime": {
+    "duration_s": 300.0,
+    "seed": 810,
+    "startup_delay_s": 10.0,
+    "readiness_timeout_s": 180.0,
+    "start_tolerance_s": 5.0,
+    "radio_execution": "thread"
+  },
+  "mobility": {
+    "model": "gauss_markov",
+    "initial_topology": "random",
+    "tick_interval": 0.5,
+    "alpha": 0.5,
+    "area_width_m": 500,
+    "area_height_m": 500,
+    "ch_mean_speed_mps": 6.0,
+    "sn_mean_speed_mps": 2.0,
+    "speed_stddev": 1.0,
+    "direction_stddev": 0.5,
+    "pause_trigger": "periodic",
+    "pause_time_range": [
+      5.0,
+      15.0
+    ],
+    "move_time_range": [
+      10.0,
+      30.0
+    ]
+  },
+  "link": {
+    "range_mode": "rssi",
+    "pathloss_exponent": 3.0,
+    "rssi0_dbm": -30.0,
+    "d0_m": 1.0,
+    "max_data_rate_bps": 1000000000.0
+  },
+  "logging": {
+    "protocol_events": false,
+    "packet_events": false,
+    "mobility_tsv": false
+  },
+  "flame": {
+    "sample_source": "mnist",
+    "trainer": "mnist",
+    "mnist_distribution": "spatial_clusters",
+    "repeat_sensor_samples": false,
+    "sample_interval_s": 15.0,
+    "evaluate_accuracy": true,
+    "save_final_model": true
+  }
+}

@@ -63,12 +63,33 @@ def read_json(path, fallback=None):
 
 def presets():
     rows = []
-    for path in sorted(CONFIG_DIR.rglob('*.json')):
-        if path.name == 'all_options.json' or path.is_symlink():
+    for path in sorted(list((CONFIG_DIR / 'demos').glob('panel-*.json')) + list(GUI_DIR.glob('*.json'))):
+        if path.name in {'all_options.json', 'manifest.json'} or path.is_symlink():
             continue
         rel = path.relative_to(CONFIG_DIR).as_posix()
-        rows.append({'id': rel, 'name': path.stem.replace('_', ' ').replace('-', ' ').title(),
-                     'category': path.parent.relative_to(CONFIG_DIR).as_posix(),
+        name = path.stem.replace('_', ' ').replace('-', ' ').title()
+        panel_names = {
+            'panel-01': '01 · Static baseline · 2 CH / 2 SN',
+            'panel-02': '02 · Sensor association · 2 CH / 4 SN',
+            'panel-03': '03 · Model exchange · 2 CH / 4 SN',
+            'panel-04': '04 · Moving nodes (Gauss–Markov) · 2 CH / 4 SN',
+            'panel-05': '05 · Lossy radio (RSSI) · 2 CH / 4 SN',
+        }
+        name = next((label for prefix, label in panel_names.items() if path.stem.startswith(prefix)), name)
+        category = path.parent.relative_to(CONFIG_DIR).as_posix()
+        if category == 'evaluations/thesis_matrix':
+            # Present scenario dimensions, not cryptic m-..._d-... codes.
+            match = re.fullmatch(r'm-(none|low|medium|high)_d-(low|medium|high)_f-(low|medium|high)_a-(small|medium|large)', path.stem)
+            if match:
+                mobility, density, frequency, area = match.groups()
+                ch, sn = {'low': (4, 20), 'medium': (7, 50), 'high': (10, 100)}[density]
+                interval = {'low': 60, 'medium': 30, 'high': 15}[frequency]
+                length = {'small': 200, 'medium': 350, 'large': 500}[area]
+                name = f'Mobility {mobility.title()} | {ch} CH + {sn} SN | {interval}s samples | {length}x{length}m'
+            category = 'THESIS EVALUATION (300-second matrix)'
+        elif category == 'demos':
+            category = 'PANEL DEMOS — ALL MNIST / PYTORCH'
+        rows.append({'id': rel, 'name': name, 'category': category,
                      'custom': path.parent == GUI_DIR})
     return rows
 
@@ -94,8 +115,8 @@ def validated_scenario(data):
     for key in ('num_ch', 'num_sn'):
         if type(data.get(key)) is not int or not 0 <= data[key] <= 200:
             raise ValueError(f'{key} must be an integer between 0 and 200')
-    if data['num_ch'] < 1 or data['num_ch'] + data['num_sn'] > 200:
-        raise ValueError('Use at least one CH and at most 200 nodes total')
+    if data['num_ch'] < 1 or data['num_ch'] + data['num_sn'] > 220:
+        raise ValueError('Use at least one CH and at most 220 nodes total')
     result = dict(data)
     for group, cls in [('runtime', EmulationConfig), ('link', LinkConfig),
                        ('mobility', MobilityConfig), ('logging', LoggingConfig)]:
@@ -138,6 +159,7 @@ class ExperimentController:
         self.log_path = None
         self.log_handle = None
         self.started_at = None
+        self.finished_at = None
         self.last_status = 'idle'
         self.last_exit_code = None
         self.run_name = None
@@ -149,6 +171,7 @@ class ExperimentController:
             code = self.process.poll()
             if code is not None:
                 self.last_exit_code = code
+                self.finished_at = time.time()
                 if self.last_status != 'stopped':
                     self.last_status = 'complete' if code == 0 else 'failed'
                 self.process = None
@@ -167,7 +190,7 @@ class ExperimentController:
             self._refresh()
             return {'status': self.last_status, 'running': self.process is not None,
                     'pid': self.process.pid if self.process else None,
-                    'started_at': self.started_at, 'exit_code': self.last_exit_code,
+                    'started_at': self.started_at, 'finished_at': self.finished_at, 'exit_code': self.last_exit_code,
                     'run': self.run_name, 'scenario_name': self.selected_name,
                     'log': self.log_tail()}
 
@@ -205,6 +228,7 @@ class ExperimentController:
             self.log_handle = log_handle
             self.log_path = log_path
             self.started_at = time.time()
+            self.finished_at = None
             self.last_status = 'running'
             self.last_exit_code = None
             self.run_name = None
@@ -219,6 +243,7 @@ class ExperimentController:
                 raise ValueError('No experiment is currently running')
             process = self.process
             self.last_status = 'stopped'
+            self.finished_at = time.time()
             # CLIVE spawns worker and radio processes; target the entire session,
             # not only the top-level Python launcher.
             try:

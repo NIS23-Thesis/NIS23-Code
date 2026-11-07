@@ -46,11 +46,11 @@ def main():
             digit = (sensor_num - 1) % 10
             rng = random.Random(_stable_seed(810, name))
             indexes = np.flatnonzero(labels == digit)
-            picks = [int(indexes[rng.randrange(len(indexes))]) for _ in range(128)]
+            picks = [int(indexes[i]) for i in rng.sample(range(len(indexes)), 128)]
             expected = [images[index].tobytes() + bytes([digit]) for index in picks]
-            actual = _MNISTSource(name, 810, {'mnist_samples_per_sensor':128, 'sample_source':'mnist'})
+            actual = _MNISTSource(name, 810, {'mnist_samples_per_sensor':128, 'sample_source':'mnist', 'mnist_distribution':'sensor_id'})
             check(actual.samples == expected and [actual.collect() for _ in range(128)] == expected,
-                  f'MNIST samples and exact RNG selection unchanged for {name}')
+                  f'MNIST samples have unique deterministic selection for {name}')
 
     check(EmulationConfig.from_dict({'radio_execution':'thread'}).radio_execution == 'thread',
           'Compact radio execution is accepted by runtime schema')
@@ -78,7 +78,7 @@ def main():
           f'Repeated sensor creation releases retained sample memory ({after-before} B)')
 
     with tempfile.TemporaryDirectory(prefix='clive-memory-thread-validation-') as folder:
-        with (ROOT / 'configs/demos/flame_smoke.json').open() as f:
+        with (ROOT / 'configs/demos/flame-synthetic-transport-and-aggregation-smoke.json').open() as f:
             scenario=json.load(f)
         scenario['runtime']['radio_execution']='thread'
         path=Path(folder)/'scenario.json';path.write_text(json.dumps(scenario))

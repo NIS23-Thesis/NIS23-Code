@@ -1,0 +1,35 @@
+'use strict';
+const assert=require('node:assert/strict');
+const path=require('node:path');
+const fs=require('node:fs');
+const vm=require('node:vm');
+const folder=path.resolve(__dirname,'../visualizer/static');
+const ev=vm.runInNewContext(fs.readFileSync(path.join(folder,'event_stream.js'),'utf8')+'\nCliveEventStream;');
+const map=require(path.join(folder,'map_activity.js'));
+const hello={time_s:1.0,action:'flame_hello_sent',source:'CH-1',target:null};
+const discovery={time_s:1.3,action:'flame_ch_discovered',source:'CH-1',target:'SN-1'};
+const model={time_s:2.0,action:'flame_model_sent',source:'CH-1',target:'CH-2',packet_type:4};
+const left={time_s:3.0,action:'flame_leave_sent',source:'SN-1',target:'CH-1'};
+const input=[hello,discovery,model,left];
+// Map focus shows ONE event stage, not overlapping HELLO/JOIN/LEAVE labels.
+assert.equal(map.focus(input,1.01).stage,'hello');
+assert.equal(map.focus(input,1.31).stage,'discovered');
+assert.equal(map.focus(input,2.1).stage,'model');
+assert.equal(map.focus(input,3.5).stage,'exit');
+assert.equal(map.focus(input,6),null);
+assert.equal(map.recent(input,3.5).length,1);
+assert.equal(map.focus([{time_s:1.2,action:'flame_aggregated',source:'CH-1'}],2.0).label,'Models aggregated');
+assert.equal(ev.matchesFilter({event:'flame_hello_sent',stream:'protocol'},'activity'),true);
+assert.equal(ev.matchesFilter({event:'flame_trained',stream:'protocol'},'activity'),true);
+assert.equal(ev.matchesFilter({event:'flame_message_reassembled',stream:'protocol'},'activity'),false);
+assert.equal(ev.matchesFilter({event:'transmit',stream:'packet'},'packets'),true);
+assert.equal(ev.matchesFilter({event:'receive',stream:'packet'},'packets'),false);
+assert.equal(ev.matchesFilter({event:'attempt',stream:'packet'},'packets'),false);
+assert.equal(ev.matchesFilter({event:'receive',stream:'packet'},'network'),true);
+assert.equal(ev.matchesFilter({event:'delivery_drop',stream:'packet'},'network'),true);
+assert.equal(ev.matchesFilter({event:'flame_trained',stream:'protocol'},'network'),false);
+const serialized=ev.render([{event:'transmit',stream:'packet',packet_type:0,sequence_number:9,time_s:1,seq:1,node:'CH-1'}],
+  {filter:'packets',packetName:()=> 'HELLO',escapeHtml: x=>String(x)});
+assert.match(serialized.html,/HELLO · Sent/);
+assert.match(serialized.html,/seq #9/);
+console.log('PASS: human-readable events and single-stage HELLO/model/LEAVE map focus');

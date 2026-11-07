@@ -83,7 +83,7 @@ python3 clive.py --scenario configs/all_options.json --results results
 FLAME is the default protocol (`flame_protocol:FlameProtocol`). For the integrated FLAME configuration and end-to-end tests, see the root `README-INTEGRATION.md`. To run a different protocol:
 
 ```bash
-python3 clive.py --scenario configs/demos/static_star.json \
+python3 clive.py --scenario configs/demos/topology-static-star-2ch-4sn.json \
   --protocol example_protocol:IndependentProbeProtocol
 ```
 
@@ -150,3 +150,27 @@ By default each run keeps only the files needed for normal evaluation and replay
 Verbose per-node `*.events.jsonl` and `*.packets.jsonl` files are disabled by default. They can be enabled with the scenario `logging` section and are then stored under `debug/`. `mobility.tsv` is optional and is only a human-readable export of the canonical `mobility.bin` trace.
 
 For a 110-node, 300-second run at a 0.1-second mobility interval, `mobility.bin` is about 5.28 MB total. The same trace previously produced a ~26 MB JSON plan and was deserialized into every node process.
+
+## Sensor association: first compatible HELLO (CLIVE adapter)
+
+A Sensor Node sends JOIN to the first model-compatible, active Cluster Head whose
+HELLO **it received**, in that SN's arrival order. This is not nearest-CH,
+strongest-RSSI, or lexicographically lowest-IP selection. Two sensors can join
+different CHs because mobility, delay, packet loss, and execution timing may
+change the order they observe HELLOs. The first choice is preserved while joined;
+when no longer associated, the adapter considers still-active discovered CHs in
+that original arrival order. FLAME's own implementation is not modified.
+
+## Visualizer event groups and traffic chart
+
+The Traffic, Events, and Nodes tabs are always available below the topology;
+"Show extra metrics" only expands the metric cards. In Events, the Transmissions
+filter shows real `transmit` records (not queue/admission/kernel steps). Receptions
+shows real `receive` records, and Protocol shows FLAME application actions.
+"All events" includes low-level internal operations when needed for debugging.
+
+Traffic chart hover shows **recorded events per one-second bucket**. These are
+NodeSocket log counts, not packet-delivery probability or application acceptance.
+The chart reads append-only packet logs incrementally, rather than discarding
+older counts after the bounded Event Stream cache fills. Link animation queries
+are independent of the Events tab filter.
