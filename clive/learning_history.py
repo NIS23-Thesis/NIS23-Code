@@ -38,7 +38,8 @@ class LearningHistory:
         self.target.parent.mkdir(parents=True, exist_ok=True)
         self.count = count
 
-    def record(self, model_state, *, node, time_s, revision, cause, observations):
+    def record(self, model_state, *, node, time_s, revision, cause, observations,
+               revision_context=None):
         import torch
         if model_state is None:
             return None
@@ -70,6 +71,8 @@ class LearningHistory:
                   'evaluated_samples': self.count,
                   'dataset': 'MNIST held-out test subset (fixed seed)',
                   'measurement': 'sampled_test_accuracy'}
+        if revision_context:
+            record.update(revision_context)
         with self.target.open('a', encoding='utf8') as out:
             out.write(json.dumps(record, separators=(',', ':'))+'\n')
         return record

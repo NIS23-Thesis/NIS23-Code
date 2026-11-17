@@ -49,7 +49,7 @@
     "propagation_speed_mps": 299792458,
     "base_delay_s": 0,
     "e_elec_j_per_bit": 5e-08,
-    "e_amp_j_per_bit_m2": 1e-07,
+    "e_amp_j_per_bit_mn": 1e-10,
     "bucket_capacity_bytes": 65507,
     "ipdv_enabled": true,
     "range_mode": "rssi",

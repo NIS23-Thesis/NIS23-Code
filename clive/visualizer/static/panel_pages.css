@@ -69,3 +69,80 @@
 
 .confusion-matrix td,.confusion-matrix th{min-width:35px;text-align:center;padding:7px 4px;font-variant-numeric:tabular-nums}
 .confusion-matrix .matrix-correct{background:rgba(112,223,199,.13);color:#9ff3e2;font-weight:700}
+
+
+/* Contextual help: explanatory prose is available, never permanently on the dashboard. */
+.heading-help { display:flex; align-items:center; gap:9px; flex-wrap:wrap; }
+.heading-help h1,.heading-help h2,.heading-help h3 { margin:0; }
+.help-trigger { display:inline-grid; place-items:center; width:26px; height:26px; min-width:26px; padding:0;
+ border:1px solid rgba(143,161,181,.35); border-radius:50%; background:transparent;
+ color:var(--muted,#a7b6c7); font:700 13px/1 system-ui,sans-serif; letter-spacing:0; vertical-align:middle;
+ cursor:pointer; transition: border-color .15s, color .15s, background .15s; }
+.help-trigger:hover { border-color:var(--accent,var(--aqua,#70dfc7)); color:var(--text,var(--fg,#ecf2fa)); background:rgba(112,223,199,.09); }
+.help-trigger:focus-visible,.clive-help-close:focus-visible { outline:2px solid var(--accent,var(--aqua,#70dfc7)); outline-offset:3px; }
+.clive-help-dialog { position:fixed; inset:0; width:min(490px,calc(100vw - 24px)); max-height:min(75vh,620px);
+ border:1px solid var(--border-strong,var(--border,#34485d)); border-radius:14px;
+ background:var(--panel-2,var(--panel,#161f2c)); color:var(--text,var(--fg,#ecf2fa));
+ padding:0; box-shadow:0 20px 80px rgba(0,0,0,.55); overflow:auto; }
+.clive-help-dialog::backdrop { background:rgba(3,8,14,.73); backdrop-filter:blur(3px); }
+.clive-help-top { display:flex; justify-content:space-between; align-items:center; padding:10px 16px;
+ border-bottom:1px solid var(--border,#34485d); }
+.clive-help-label { font-size:10px; font-weight:750; letter-spacing:.13em; color:var(--muted,#a7b6c7); }
+.clive-help-close { padding:0; display:grid; place-items:center; width:30px; height:30px;
+ background:transparent; border:1px solid transparent; border-radius:8px; font-size:22px; cursor:pointer; }
+.clive-help-close:hover { border-color:var(--border,#34485d); }
+.clive-help-content { padding:17px 20px 22px; }
+.clive-help-content h2 { font-size:19px; margin:0 0 12px; line-height:1.3; }
+.clive-help-content p { font-size:14px; line-height:1.65; margin:0; color:var(--muted-2,var(--muted,#a7b6c7)); }
+.clive-help-content p + p {margin-top:10px;}
+.rail-card summary .help-trigger { margin-left:7px; }
+/* Keep missing-telemetry warnings visible; empty explanatory placeholders occupy no space. */
+#linkNotice:empty,#protocolHealth:empty,#mapActivityStatus .map-action-description:empty { display:none; }
+@media(max-width:650px) { .clive-help-content{padding:15px 16px 20px;} }
+
+/* Match Studio/Topology header; remove second large masthead. */
+.shell{max-width:none;padding:0 28px 45px}
+.bar.clive-site-header{margin:0 -28px;border-bottom:1px solid #2a3b4e;padding:13px clamp(16px,2.1vw,32px);min-height:70px}
+.bar.clive-site-header nav{gap:4px}
+.bar.clive-site-header nav a{font-size:12px;color:#a8bdcc}
+.page-title{margin:20px 0 12px}
+.page-title h1{font-size:24px}
+.tools{margin:11px 0 16px}
+@media(max-width:650px){.shell{padding:0 12px 35px}.bar.clive-site-header{margin:0 -12px}}
+
+.bar.clive-site-header{width:calc(100% + 56px)}
+@media(max-width:650px){.bar.clive-site-header{width:calc(100% + 24px)}}
+
+@media(max-width:1190px){.bar.clive-site-header nav.clive-site-nav{width:100%;flex-wrap:nowrap;overflow-x:auto;gap:4px}}
+
+/* Consistent results-page gutters. */
+.shell{padding:22px var(--clive-page-inset) 55px!important;max-width:1600px!important;margin-inline:auto!important}
+.page-title{margin-top:8px!important}
+@media(max-width:640px){.shell{padding:16px 12px 42px!important}}
+
+/* Event archive categories: describe evidence provenance at the point of filtering. */
+.event-filter-explanation{color:#9cb6c8;font-size:11px;line-height:1.5;margin:5px 0 13px;max-width:980px}
+
+/* Preserve origin in archive; failures are highlighted without relabeling source. */
+.archive-clive{color:#8bcde9;}
+.archive-internal{color:#a4b5c8;}
+.event-is-failure .event-explained{border-left:2px solid #b96c79;padding-left:8px;}
+
+/* Sort and filters apply to the complete recorded history before pagination. */
+.archive-filter-form{display:grid;gap:11px;padding:15px;border:1px solid var(--border);border-radius:13px;background:var(--panel);margin:17px 0 7px;}
+.archive-filter-row{display:flex;align-items:end;flex-wrap:wrap;gap:11px;}
+.archive-filter-row label{display:grid;gap:5px;flex:1 1 156px;min-width:135px;max-width:none;font-size:11px;color:var(--muted);font-weight:700;}
+.archive-filter-row input,.archive-filter-row select{min-width:0;width:100%;max-width:none;padding:10px 11px;border:1px solid #475d72;border-radius:8px;background:#111e2b;color:var(--fg);font-size:13px;}
+.archive-filter-row .archive-search{flex:1.6 1 200px;}
+.archive-filter-row button{min-height:41px;flex:0 0 auto;border:1px solid #3e9b95;background:#146d69;color:#fff;font-size:12px;font-weight:750;padding:9px 14px;}
+.archive-filter-row button:hover{background:#1b817c;border-color:#7cbbb7;}
+.archive-filter-row .archive-secondary{background:#203041;color:#cbddea;border-color:#4d6277;}
+.archive-filter-row .archive-secondary:hover{background:#2b4156;color:#fff;}
+.archive-flame-packet{color:#d6baff;border-color:#7b589c;background:#2d223b;}
+.archive-flame-action{color:#7de5cf;border-color:#398578;background:#17302f;}
+.archive-flame-internal{color:#92c9f5;border-color:#47799c;background:#203447;}
+.archive-clive{color:#ced6e4;border-color:#4e6176;background:#27323f;}
+.archive-network{color:#f1c47a;border-color:#786035;background:#302a21;}
+.archive-table tbody tr:hover{background:rgba(112,223,199,.055);}
+@media(max-width:760px){.archive-filter-row label{flex:1 1 calc(50% - 12px);} .archive-filter-row button{flex:1 1 125px;}}
+@media(max-width:440px){.archive-filter-row label{flex:1 1 100%;}}

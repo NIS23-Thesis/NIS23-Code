@@ -60,20 +60,18 @@ class Trainer:
         )
 
     def should_train(self) -> bool:
+        """Require the configured proportion of *new, unused* observations.
+
+        Chapter 4, Trainer Submodule: the threshold applies to observations
+        received since the previous successful local training, not to the
+        lifetime number of entries stored in the CH's dataset.
         """
-        Return whether the configured percentage of expected
-        observations has been received.
-        """
-
-        received_count = len(
-            self.dataset_manager.get_observations()
+        new_count = len(self.get_new_observations())
+        # Multiplication avoids rounding a fractional required sample count
+        # downward; e.g. 80% of 11 requires at least 9 new observations.
+        return new_count > 0 and (
+            new_count / self.expected_observations >= self.training_threshold
         )
-
-        received_ratio = (
-            received_count / self.expected_observations
-        )
-
-        return received_ratio >= self.training_threshold
 
     def train(self):
         """

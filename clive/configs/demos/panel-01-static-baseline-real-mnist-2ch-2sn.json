@@ -2,7 +2,7 @@
   "num_ch": 2,
   "num_sn": 2,
   "runtime": {
-    "duration_s": 20,
+    "duration_s": 16,
     "seed": 810,
     "startup_delay_s": 2,
     "readiness_timeout_s": 90,
@@ -48,7 +48,7 @@
     "sample_source": "mnist",
     "trainer": "mnist",
     "hello_interval_s": 0.8,
-    "sample_interval_s": 0.7,
+    "sample_interval_s": 1.5,
     "service_interval_s": 0.01,
     "expected_observations": 2,
     "training_threshold": 1.0,

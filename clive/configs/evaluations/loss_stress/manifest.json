@@ -1,0 +1,40 @@
+{
+  "status": "configured_not_executed",
+  "description": "Controlled sustained-loss evaluation for FLAME under CLIVE NodeSocket",
+  "scenarios": [
+    {
+      "scenario": "loss-00-reference.json",
+      "distance_m": 10.0,
+      "modeled_link_plr": 0.0,
+      "duration_s": 300.0,
+      "seed": 810,
+      "data": "real MNIST",
+      "disclaimer": "Modeled loss probability; observed losses and FLAME transfer outcomes require execution."
+    },
+    {
+      "scenario": "loss-02-moderate.json",
+      "distance_m": 20.0,
+      "modeled_link_plr": 0.02,
+      "duration_s": 300.0,
+      "seed": 810,
+      "data": "real MNIST",
+      "disclaimer": "Modeled loss probability; observed losses and FLAME transfer outcomes require execution."
+    },
+    {
+      "scenario": "loss-10-severe.json",
+      "distance_m": 40.0,
+      "modeled_link_plr": 0.1,
+      "duration_s": 300.0,
+      "seed": 810,
+      "data": "real MNIST",
+      "disclaimer": "Modeled loss probability; observed losses and FLAME transfer outcomes require execution."
+    }
+  ],
+  "caveats": [
+    "The 0/2/10% values are RSSI mapping probabilities, not measured outcomes.",
+    "Protocol transfer reliability may fail; do not count process exit as protocol success.",
+    "FLAME source is not altered by this generator.",
+    "Loss profiles alter CH-to-CH distance; sensor links are deliberately nearby.",
+    "Run at least three distinct random seeds before statistical comparisons."
+  ]
+}

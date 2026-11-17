@@ -22,12 +22,12 @@ from dataclasses import fields
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from orchestrator import (EmulationConfig, LinkConfig, MobilityConfig,
-                          LoggingConfig, atomic_json, build_nodes)
+                          LoggingConfig, NodeRole, NodeSpec, atomic_json, build_nodes)
 from flame_protocol import DEFAULTS as FLAME_DEFAULTS, _configuration as validate_flame
-from visualizer import RunCatalog, VisualizerServer
+from visualizer import RunCatalog, VisualizerHandler, STATIC_DIR as VISUALIZER_STATIC_DIR
 
 CLIVE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = CLIVE_DIR / 'control_ui'
@@ -69,11 +69,11 @@ def presets():
         rel = path.relative_to(CONFIG_DIR).as_posix()
         name = path.stem.replace('_', ' ').replace('-', ' ').title()
         panel_names = {
-            'panel-01': '01 · Static baseline · 2 CH / 2 SN',
-            'panel-02': '02 · Sensor association · 2 CH / 4 SN',
+            'panel-01': '01 · Static no-loss · 2 CH / 2 SN',
+            'panel-02': '02 · HELLO + JOIN · 2 CH / 4 SN',
             'panel-03': '03 · Model exchange · 2 CH / 4 SN',
-            'panel-04': '04 · Moving nodes (Gauss–Markov) · 2 CH / 4 SN',
-            'panel-05': '05 · Lossy radio (RSSI) · 2 CH / 4 SN',
+            'panel-04': '04 · Gauss–Markov · 2 CH / 4 SN',
+            'panel-05': '05 · RSSI loss · 2 CH / 4 SN',
         }
         name = next((label for prefix, label in panel_names.items() if path.stem.startswith(prefix)), name)
         category = path.parent.relative_to(CONFIG_DIR).as_posix()
@@ -108,15 +108,35 @@ def validated_scenario(data):
     """
     if not isinstance(data, dict):
         raise ValueError('Scenario must be an object')
-    legal = {'num_ch', 'num_sn', 'runtime', 'mobility', 'link', 'flame', 'logging'}
+    legal = {'num_ch', 'num_sn', 'nodes', 'addressing', 'runtime', 'mobility', 'link', 'flame', 'logging'}
     unknown = set(data) - legal
     if unknown:
         raise ValueError(f'Unknown top-level settings: {sorted(unknown)}')
-    for key in ('num_ch', 'num_sn'):
-        if type(data.get(key)) is not int or not 0 <= data[key] <= 200:
-            raise ValueError(f'{key} must be an integer between 0 and 200')
-    if data['num_ch'] < 1 or data['num_ch'] + data['num_sn'] > 220:
-        raise ValueError('Use at least one CH and at most 220 nodes total')
+    if 'nodes' in data:
+        if 'addressing' in data:
+            raise ValueError('Use nodes or addressing, not both')
+        if not isinstance(data['nodes'], list) or not data['nodes']:
+            raise ValueError('nodes must be a nonempty list')
+        specs = [NodeSpec.from_dict(value) for value in data['nodes']]
+        actual_ch = sum(node.role == NodeRole.CLUSTER_HEAD for node in specs)
+        actual_sn = len(specs) - actual_ch
+        for key, actual in (('num_ch', actual_ch), ('num_sn', actual_sn)):
+            if key in data and data[key] != actual:
+                raise ValueError(f'{key} does not match nodes')
+        names = [node.name for node in specs]
+        overlays = [node.address for node in specs]
+        underlays = [node.underlay_address for node in specs]
+        if len(set(names)) != len(names) or len(set(overlays)) != len(overlays) or len(set(ip for ip, _ in underlays)) != len(underlays):
+            raise ValueError('Node names, overlay endpoints and underlay source IPs must be unique')
+        n_ch, n_sn = actual_ch, actual_sn
+    else:
+        for key in ('num_ch', 'num_sn'):
+            if type(data.get(key)) is not int or not 0 <= data[key] <= 200:
+                raise ValueError(f'{key} must be an integer between 0 and 200')
+        n_ch, n_sn = data['num_ch'], data['num_sn']
+        specs = build_nodes(n_ch, n_sn, addressing=data.get('addressing'))
+    if n_ch < 1 or n_ch > 200 or n_sn > 200 or n_ch + n_sn > 220:
+        raise ValueError('Use at least one CH, at most 200 per role, and at most 220 nodes total')
     result = dict(data)
     for group, cls in [('runtime', EmulationConfig), ('link', LinkConfig),
                        ('mobility', MobilityConfig), ('logging', LoggingConfig)]:
@@ -136,12 +156,12 @@ def validated_scenario(data):
     mobility = result.get('mobility', {})
     duration = float(runtime.get('duration_s', 300))
     tick = float(mobility.get('tick_interval', 0.1))
-    if duration / tick * (data['num_ch'] + data['num_sn']) > 6_000_000:
+    if duration / tick * (n_ch + n_sn) > 6_000_000:
         raise ValueError('Scenario is too large for the GUI safety limit (6 million node-ticks)')
     # Check manual coordinate coverage and node naming without precomputing a trace.
     mob = MobilityConfig.from_dict(mobility)
     if mob.initial_topology == 'manual':
-        expected = {n.name for n in build_nodes(data['num_ch'], data['num_sn'])}
+        expected = {n.name for n in specs}
         actual = set(mob.manual_positions)
         if expected != actual:
             raise ValueError('Manual positions must contain precisely these nodes: ' + ', '.join(sorted(expected)))
@@ -165,6 +185,8 @@ class ExperimentController:
         self.run_name = None
         self.existing_runs = set()
         self.selected_name = None
+        self.duration_s = None
+        self.startup_delay_s = None
 
     def _refresh(self):
         if self.process is not None:
@@ -192,6 +214,7 @@ class ExperimentController:
                     'pid': self.process.pid if self.process else None,
                     'started_at': self.started_at, 'finished_at': self.finished_at, 'exit_code': self.last_exit_code,
                     'run': self.run_name, 'scenario_name': self.selected_name,
+                    'duration_s': self.duration_s, 'startup_delay_s': self.startup_delay_s,
                     'log': self.log_tail()}
 
     def log_tail(self):
@@ -234,6 +257,8 @@ class ExperimentController:
             self.run_name = None
             self.existing_runs = existing_runs
             self.selected_name = str(name or 'Unsaved experiment')[:80]
+            self.duration_s = float(scenario.get('runtime', {}).get('duration_s', 0))
+            self.startup_delay_s = float(scenario.get('runtime', {}).get('startup_delay_s', 0))
         return self.status()
 
     def stop(self):
@@ -273,11 +298,28 @@ class ExperimentController:
                     atomic_json(str(manifest_path), manifest)
         return self.status()
 
-    def history(self):
+    def history(self, offset=0, limit=30, query='', include_total=False):
+        """Return a stable, searchable run page without silently hiding older runs.
+
+        None means all runs (used by the shared header selector). For History,
+        paginate *before* reading per-run metrics to avoid expensive full scans.
+        """
+        if not isinstance(offset, int) or offset < 0:
+            raise ValueError('Run-history offset must be non-negative')
+        if limit is not None and (not isinstance(limit, int) or not 1 <= limit <= 200):
+            raise ValueError('Run-history page size must be between 1 and 200')
+        if not isinstance(query, str) or len(query) > 120:
+            raise ValueError('Run-history search is too long')
+        needle = query.strip().casefold()
         dirs = sorted((p for p in self.results_dir.glob('run-*') if p.is_dir()),
-                      key=lambda p: p.stat().st_mtime, reverse=True)[:30]
+                      key=lambda p: (p.stat().st_mtime, p.name), reverse=True)
+        if needle:
+            dirs = [p for p in dirs if needle in p.name.casefold() or
+                    needle in str((read_json(p / 'run-manifest.json', {}) or {}).get('status', '')).casefold()]
+        total = len(dirs)
+        selected = dirs[offset:] if limit is None else dirs[offset:offset + limit]
         rows = []
-        for p in dirs:
+        for p in selected:
             manifest = read_json(p / 'run-manifest.json', {}) or {}
             metrics = read_json(p / 'metrics.json', {}) or {}
             rows.append({'name': p.name, 'status': manifest.get('status', 'starting'),
@@ -286,13 +328,18 @@ class ExperimentController:
                          'duration_s': (read_json(p / 'plan.json', {}) or {}).get('config', {}).get('duration_s'),
                          'metrics': {key: (metrics.get('totals', {}) or {}).get(key) for key in
                                      ['packets_sent', 'packets_received', 'delivery_drops']}})
+        if include_total:
+            return {'runs': rows, 'total': total, 'offset': offset,
+                    'limit': limit, 'has_more': offset + len(rows) < total}
         return rows
 
 
-class Handler(SimpleHTTPRequestHandler):
+class Handler(VisualizerHandler):
     server_version = 'CLIVEControlCenter/1.0'
     def __init__(self, *args, **kwargs):
-        super().__init__(*args, directory=str(STATIC_DIR), **kwargs)
+        # Normal web pages are Studio assets; the /topology/ route switches
+        # to the read-only Visualizer assets without opening a second port.
+        SimpleHTTPRequestHandler.__init__(self, *args, directory=str(STATIC_DIR), **kwargs)
 
     def log_message(self, format, *args):
         if not self.server.quiet:
@@ -322,6 +369,24 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_GET(self):
         parsed = urlparse(self.path)
+        # Serve all browser pages and both API families from a single origin.
+        # The Visualizer handler is reused rather than reimplementing its APIs.
+        if parsed.path.startswith('/api/viz/'):
+            self.path = '/api/' + parsed.path[len('/api/viz/'):] + (
+                '?' + parsed.query if parsed.query else '')
+            return VisualizerHandler.do_GET(self)
+        if parsed.path == '/topology':
+            self.send_response(HTTPStatus.PERMANENT_REDIRECT)
+            self.send_header('Location', '/topology/' + ('?' + parsed.query if parsed.query else ''))
+            self.send_header('Content-Length', '0')
+            self.end_headers()
+            return
+        if parsed.path.startswith('/topology/'):
+            suffix = parsed.path[len('/topology/'):] or 'index.html'
+            # Keep all visualizer assets within its dedicated static directory.
+            self.path = '/' + suffix + ('?' + parsed.query if parsed.query else '')
+            self.directory = str(VISUALIZER_STATIC_DIR)
+            return VisualizerHandler.do_GET(self)
         try:
             if parsed.path == '/api/bootstrap':
                 self.respond({'presets': presets(), 'defaults': DEFAULT_SCENARIO,
@@ -335,7 +400,17 @@ class Handler(SimpleHTTPRequestHandler):
             elif parsed.path == '/api/status':
                 self.respond(self.server.controller.status())
             elif parsed.path == '/api/history':
-                self.respond({'runs': self.server.controller.history()})
+                parameters = parse_qs(parsed.query, keep_blank_values=True)
+                raw_offset = parameters.get('offset', ['0'])[0]
+                raw_limit = parameters.get('limit', ['30'])[0]
+                try:
+                    offset = int(raw_offset)
+                    limit = None if raw_limit == 'all' else int(raw_limit)
+                except ValueError as exc:
+                    raise ValueError('Invalid run-history pagination') from exc
+                query = parameters.get('search', [''])[0]
+                self.respond(self.server.controller.history(
+                    offset=offset, limit=limit, query=query, include_total=True))
             elif parsed.path.startswith('/api/run/'):
                 name = unquote(parsed.path[len('/api/run/'):])
                 path = self.server.controller.results_dir / name
@@ -382,8 +457,11 @@ class Handler(SimpleHTTPRequestHandler):
 class Server(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
-    def __init__(self, address, controller, visualizer_url=None, quiet=False):
+
+    def __init__(self, address, controller, visualizer_url='/topology/', quiet=False):
         self.controller = controller
+        self.catalog = RunCatalog(controller.results_dir)
+        self.capacity_editor_url = '/?section=capacity'
         self.visualizer_url = visualizer_url
         self.quiet = quiet
         super().__init__(address, Handler)
@@ -391,8 +469,10 @@ class Server(ThreadingHTTPServer):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--port', type=int, default=9767)
-    parser.add_argument('--visualizer-port', type=int, default=9766)
+    parser.add_argument('--port', type=int, default=9767,
+                        help='Single CLIVE web port for Setup, Topology, Learning, Events, and History')
+    parser.add_argument('--visualizer-port', type=int, default=None,
+                        help=argparse.SUPPRESS)  # Old launcher compatibility; no second server.
     parser.add_argument('--host', default='127.0.0.1')
     parser.add_argument('--results', default=str(RESULTS_DIR))
     parser.add_argument('--open', action='store_true')
@@ -400,25 +480,17 @@ def main():
     args = parser.parse_args()
     if args.host not in ('127.0.0.1', 'localhost', '::1'):
         parser.error('Control dashboard may only listen on loopback')
-    if not 1 <= args.port <= 65535 or not 1 <= args.visualizer_port <= 65535 or args.port == args.visualizer_port:
-        parser.error('Choose two distinct valid port numbers')
+    if not 1 <= args.port <= 65535:
+        parser.error('Choose a valid port number')
     controller = ExperimentController(args.results)
-    viz = None
-    visualizer_url = None
-    try:
-        viz = VisualizerServer(('127.0.0.1', args.visualizer_port), RunCatalog(controller.results_dir), quiet=args.quiet)
-        threading.Thread(target=viz.serve_forever, daemon=True, name='topology-visualizer').start()
-        visualizer_url = f'http://127.0.0.1:{args.visualizer_port}/'
-    except OSError as exc:
-        print(f'Visualizer port unavailable ({exc}); controller still works.', file=sys.stderr)
-    server = Server((args.host, args.port), controller, visualizer_url, args.quiet)
+    server = Server((args.host, args.port), controller, '/topology/', args.quiet)
     url = f'http://127.0.0.1:{args.port}/'
-    print(f'CLIVE Experiment Control Center: {url}', flush=True)
-    print(f'Topology visualizer: {visualizer_url or "unavailable"}', flush=True)
+    print(f'CLIVE unified workspace: {url}', flush=True)
+    print(f'Topology: {url}topology/', flush=True)
+    print('All views and APIs share one origin; no separate Visualizer port.', flush=True)
     if args.open:
         threading.Timer(0.35, lambda: webbrowser.open(url)).start()
     def shutdown_signal(_signum, _frame):
-        # Server.shutdown must execute outside the serve_forever thread.
         threading.Thread(target=server.shutdown, daemon=True).start()
     if os.name == 'posix':
         signal.signal(signal.SIGTERM, shutdown_signal)
@@ -430,9 +502,6 @@ def main():
         if controller.status()['running']:
             controller.stop()
         server.server_close()
-        if viz is not None:
-            viz.shutdown()
-            viz.server_close()
 
 
 if __name__ == '__main__':

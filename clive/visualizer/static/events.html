@@ -1,6 +1,41 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>CLIVE · Recorded Events</title><link rel="stylesheet" href="/panel_pages.css"></head><body><div class="shell">
-<header class="bar"><div class="brand">CLIVE <span>/ EVENT HISTORY</span></div><nav><a href="/">Network map</a><a href="/learning.html">Model learning</a><a class="active" href="/events.html">Event history</a></nav></header>
-<section class="page-title"><span class="eyebrow">Diagnostics / Original logs</span><h1>Recorded event history</h1><p>Inspect all <em>recorded</em> events, page by page. This is the technical view; use Network map for presentation. Events not logged during the run cannot be reconstructed.</p></section>
-<div class="tools"><label>Run<select id="runSelect"></select></label><label>From second<input id="from" type="number" min="0" value="0" step="0.1"></label><label>To second<input id="to" type="number" min="0" placeholder="Entire run" step="0.1"></label><label>Events<select id="category"><option value="activity">FLAME activity (HELLO, JOIN, training…)</option><option value="packets">FLAME outgoing packets</option><option value="network">CLIVE TX / RX / loss</option><option value="drop">Failures only</option><option value="all">All raw records (advanced)</option></select></label><label>Search text<input id="search" type="search" placeholder="Node, type, packet seq…"></label><button id="apply">Apply</button></div>
-<section class="card"><h2>Recorded event archive</h2><p id="summary" role="status" aria-live="polite">Loading…</p><div class="table-wrap archive-table-wrap"><table class="archive-table"><thead><tr><th>Simulation time</th><th>Type</th><th>What happened</th><th>Node</th><th>From → to</th><th>Packet / sequence</th></tr></thead><tbody id="rows"></tbody></table></div><div class="tools"><button id="previous" disabled>← Previous 100</button><button id="next" disabled>Next 100 →</button></div><details><summary>Protocol fields and data completeness</summary><p>TRANSMIT: CLIVE sent a datagram. RECEIVE: NodeSocket delivered a datagram. DROP: delivery or local send failed. PROTOCOL: FLAME performed a state change. A protocol action like training has no newly generated packet sequence number. If packet logging was disabled, this archive has only the compact connection events recorded by CLIVE.</p></details></section>
-<footer class="foot">Read-only inspection; never modifies the emulation or FLAME.</footer></div><script src="/event_stream.js"></script><script src="/events.js"></script></body></html>
+<!doctype html><html lang="en"><head><script src="theme.js"></script><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>CLIVE · Recorded Events</title><link rel="stylesheet" href="panel_pages.css"><link rel="stylesheet" href="ui-shell.css"><link rel="stylesheet" href="theme.css"></head><body>
+<header class="clive-site-header" role="banner"><a class="clive-site-brand" data-studio-link="setup" href="/" aria-label="CLIVE home"><span class="clive-brand-emblem"><svg viewBox="0 0 32 32" aria-hidden="true"><path d="M6 21V11l10-6 10 6v10l-10 6z"/><path d="M6 21l10-10 10 10M16 11v16"/></svg></span><span class="clive-brand-wordmark">CLIVE<small>NETWORK EMULATOR</small></span></a><nav class="clive-site-nav" aria-label="CLIVE sections"><a class="clive-site-link" data-studio-link="setup" href="/">Setup</a><a class="clive-site-link" data-run-link href="./">Topology</a><a class="clive-site-link" data-run-link href="learning.html">Learning</a><a class="clive-site-link active" data-run-link href="events.html" aria-current="page">Events</a><a class="clive-site-link" data-studio-link="history" href="/">Run History</a></nav><div class="clive-site-context clive-run-context"><label class="clive-context-label" for="runSelect">RUN</label><select id="runSelect" aria-label="Choose results run"><option value="">No runs yet</option></select><button id="cliveThemeToggle" type="button" class="clive-theme-toggle" aria-pressed="false" aria-label="Switch to light mode" title="Switch to light mode"><span class="theme-icon" aria-hidden="true">☀</span><span class="theme-label">Light mode</span></button></div></header>
+<div class="shell">
+<section class="page-title"><span class="eyebrow">Diagnostics / Original logs</span><div class="heading-help"><h1>Recorded event history</h1><button type="button" class="help-trigger" data-help="archive-overview" aria-label="Help: Recorded event history" title="About Recorded event history" aria-haspopup="dialog">?</button></div></section>
+<form id="archiveFilterForm" class="archive-filter-form" autocomplete="off">
+  <div class="archive-filter-row">
+    <label>Events<select id="category">
+      <option value="highlights">Highlights</option>
+      <option value="flame">FLAME · All</option>
+      <option value="flame-packet">FLAME · Packet TX/RX</option>
+      <option value="flame-action">FLAME · Action</option>
+      <option value="flame-internal">FLAME · Internal</option>
+      <option value="clive">CLIVE</option>
+      <option value="network">Network · TX/RX/drops</option>
+      <option value="drop">Failures / drops</option>
+      <option value="all">All records (advanced)</option>
+    </select></label>
+    <label>Sort by time<select id="sortOrder"><option value="asc">Oldest first</option><option value="desc">Newest first</option></select></label>
+    <label>From second<input id="from" type="number" min="0" step="any" value="0"></label>
+    <label>To second<input id="to" type="number" min="0" step="any" placeholder="Entire run"></label>
+  </div>
+  <div class="archive-filter-row">
+    <label>Node<select id="nodeFilter"><option value="">All nodes</option></select></label>
+    <label>Packet family<select id="packetFilter">
+      <option value="all">All packet families</option><option value="HELLO">HELLO</option>
+      <option value="JOIN">JOIN</option><option value="JOIN_ACCEPT">JOIN_ACCEPT</option>
+      <option value="LEAVE">LEAVE</option><option value="SENSOR_DATA">SENSOR_DATA</option>
+      <option value="SENSOR_DATA_ACK">SENSOR_DATA_ACK</option>
+      <option value="MODEL_UPDATE">MODEL_UPDATE</option>
+      <option value="MODEL_UPDATE_ACK">MODEL_UPDATE_ACK</option>
+    </select></label>
+    <label>Outcome<select id="outcomeFilter"><option value="all">All outcomes</option><option value="failure">Failures only</option><option value="nonfailure">Not flagged as failure</option></select></label>
+    <label class="archive-search">Search<input id="search" type="search" placeholder="Name, packet sequence, reason…"></label>
+    <button id="apply" type="submit">Apply filters</button>
+    <button id="resetFilters" type="button" class="archive-secondary">Reset</button>
+  </div>
+</form>
+<p class="event-filter-explanation" id="eventFilterDescription" role="status">Highlights show major actions. Packet TX/RX and processing results are separate records.</p>
+<section class="card"><div class="heading-help"><h2>Recorded event archive</h2><button type="button" class="help-trigger" data-help="archive-events" aria-label="Help: Event archive" title="About Event archive" aria-haspopup="dialog">?</button></div><p id="summary" role="status" aria-live="polite">Loading…</p><div class="table-wrap archive-table-wrap"><table class="archive-table"><thead><tr><th>Simulation time</th><th>Group</th><th>What happened</th><th>Node</th><th>From → to</th><th>Packet / sequence</th></tr></thead><tbody id="rows"></tbody></table></div><div class="tools"><button id="previous" disabled>← Previous 100</button><button id="next" disabled>Next 100 →</button></div></section>
+</div><template id="help-archive-overview"><h2>Recorded event history</h2><p>Inspect events saved by the selected experiment, filtered by time, category or text. The archive is read-only; logging must have been enabled during the run for corresponding packet events to exist. Use Network map for a compact playback view.</p></template>
+<template id="help-archive-events"><h2>How to read event records</h2><p>FLAME · Packet consists only of actual HELLO, JOIN, JOIN_ACCEPT, SENSOR_DATA, MODEL_UPDATE, ACK, and LEAVE TX/RX recorded by CLIVE NodeSocket. FLAME · Action shows resulting protocol decisions: discovery, association and accepted observations. FLAME · Internal shows training, aggregation and reassembly. CLIVE shows runtime, data source and adapter diagnostics. Network shows transport behavior and drops. Related packet families on an Action row do not mean that row was a transmitted datagram. The archive is globally sorted by time before pagination, and packet/node/outcome filters are applied before the page limit. Packet logging must have been enabled in the original experiment to see actual TX/RX.</p></template><script src="ui-nav.js"></script><script src="help.js"></script><script src="event_stream.js"></script><script src="events.js"></script></body></html>

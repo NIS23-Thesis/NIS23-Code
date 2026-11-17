@@ -59,7 +59,7 @@
     "sample_source": "mnist",
     "trainer": "mnist",
     "hello_interval_s": 0.8,
-    "sample_interval_s": 2.0,
+    "sample_interval_s": 4.0,
     "service_interval_s": 0.01,
     "expected_observations": 2,
     "training_threshold": 1.0,

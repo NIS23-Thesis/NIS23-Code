@@ -2,7 +2,7 @@
   "num_ch": 2,
   "num_sn": 4,
   "runtime": {
-    "duration_s": 28,
+    "duration_s": 20,
     "seed": 810,
     "startup_delay_s": 2,
     "readiness_timeout_s": 90,
@@ -15,7 +15,7 @@
   },
   "link": {
     "range_mode": "explicit",
-    "max_range_m": 60.0,
+    "max_range_m": 35.0,
     "max_data_rate_bps": 1000000000.0
   },
   "mobility": {
@@ -27,28 +27,28 @@
     "topology_margin_m": 5,
     "manual_positions": {
       "CH-1": [
-        40,
-        40
+        24,
+        50
       ],
       "CH-2": [
-        45,
-        45
+        76,
+        50
       ],
       "SN-1": [
-        39,
-        40
+        22,
+        49
       ],
       "SN-2": [
-        40,
-        41
+        27,
+        52
       ],
       "SN-3": [
-        43,
-        42
+        76,
+        48
       ],
       "SN-4": [
-        46,
-        43
+        74,
+        52
       ]
     }
   },
@@ -56,7 +56,7 @@
     "sample_source": "mnist",
     "trainer": "mnist",
     "hello_interval_s": 0.8,
-    "sample_interval_s": 1.5,
+    "sample_interval_s": 3.0,
     "service_interval_s": 0.01,
     "expected_observations": 2,
     "training_threshold": 1.0,

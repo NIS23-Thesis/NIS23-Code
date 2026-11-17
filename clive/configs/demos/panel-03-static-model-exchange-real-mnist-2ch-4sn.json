@@ -2,7 +2,7 @@
   "num_ch": 2,
   "num_sn": 4,
   "runtime": {
-    "duration_s": 35,
+    "duration_s": 22,
     "seed": 810,
     "startup_delay_s": 2,
     "readiness_timeout_s": 90,
@@ -43,12 +43,12 @@
         41
       ],
       "SN-3": [
-        48,
-        45
+        46,
+        43
       ],
       "SN-4": [
-        49,
-        46
+        45,
+        44
       ]
     }
   },
@@ -56,9 +56,9 @@
     "sample_source": "mnist",
     "trainer": "mnist",
     "hello_interval_s": 0.8,
-    "sample_interval_s": 1.2,
+    "sample_interval_s": 3.0,
     "service_interval_s": 0.01,
-    "expected_observations": 2,
+    "expected_observations": 4,
     "training_threshold": 1.0,
     "aggregation_threshold": 1,
     "aggregation_learning_rate": 0.5,

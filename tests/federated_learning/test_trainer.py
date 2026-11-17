@@ -151,44 +151,37 @@ class TestTrainer(unittest.TestCase):
 
     def test_previous_observations_are_not_retrained(self):
         manager = self.create_manager()
-
+        trained_data = []
+        def fake_train(observations):
+            trained_data.append([entry.data_id for entry in observations])
+            return "trained_model"
+        trainer = self.create_trainer(manager, train_function=fake_train)
         for data_id in range(1, 9):
             self.add_observation(manager, data_id)
+        self.assertEqual(trainer.train(), "trained_model")
+        # A new image alone cannot cause another training run.
+        for data_id in range(9, 16):
+            self.add_observation(manager, data_id)
+            self.assertFalse(trainer.should_train())
+            self.assertIsNone(trainer.train())
+        self.add_observation(manager, 16)
+        self.assertTrue(trainer.should_train())
+        self.assertEqual(trainer.train(), "trained_model")
+        self.assertEqual(trained_data, [list(range(1, 9)), list(range(9, 17))])
+        self.assertEqual(trainer.get_used_data_ids(), set(range(1, 17)))
+        self.assertFalse(trainer.should_train())
 
-        trained_data = []
-
-        def fake_train(observations):
-            trained_data.append(
-                [entry.data_id for entry in observations]
-            )
-            return "trained_model"
-
-        trainer = self.create_trainer(
-            manager,
-            train_function=fake_train,
-        )
-
-        trainer.train()
-
-        # Add two new observations.
+    def test_fractional_requirement_uses_eight_of_ten_and_nine_of_eleven(self):
+        manager = self.create_manager()
+        trainer = self.create_trainer(manager, expected_observations=11,
+                                      training_threshold=.8, train_function=lambda x: 'model')
+        for index in range(1, 9):
+            self.add_observation(manager, index)
+        self.assertFalse(trainer.should_train())
         self.add_observation(manager, 9)
-        self.add_observation(manager, 10)
-
-        # 10 / 10 = 100%, so the training condition is satisfied.
-        trainer.train()
-
-        self.assertEqual(
-            trained_data,
-            [
-                [1, 2, 3, 4, 5, 6, 7, 8],
-                [9, 10],
-            ],
-        )
-
-        self.assertEqual(
-            trainer.get_used_data_ids(),
-            {1, 2, 3, 4, 5, 6, 7, 8, 9, 10},
-        )
+        self.assertTrue(trainer.should_train())
+        self.assertEqual(trainer.train(), 'model')
+        self.assertFalse(trainer.should_train())
 
     def test_training_does_not_happen_below_80_percent(self):
         manager = self.create_manager()

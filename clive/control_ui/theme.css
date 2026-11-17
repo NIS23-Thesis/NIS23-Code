@@ -1,0 +1,303 @@
+/* CLIVE Experiment Studio light theme. Source colors retained for dark mode. */
+:root[data-theme="light"] {
+  color-scheme:light;
+  --bg:#f4f7fb;
+  --sidebar:#fff;
+  --panel:#fff;
+  --panel2:#f7fafc;
+  --stroke:#d9e3ed;
+  --text:#183047;
+  --sub:#536b80;
+  --faint:#637b90;
+  --aqua:#087e76;
+  --blue:#1a70af;
+  --danger:#bb3547;
+  --shadow:0 9px 25px rgba(21,52,83,.075);
+  --clive-shell-bg:#fff;
+  --clive-shell-border:#d8e2eb;
+  --clive-shell-muted:#526b80;
+  --clive-shell-accent:#087c77;
+}
+html[data-theme="light"] body { background:#f4f7fb!important; color:#183047!important; }
+html[data-theme="light"] .clive-site-header { background:#fff!important; color:#173249!important; border-bottom-color:#d9e2ec!important; box-shadow:0 2px 14px rgba(25,48,70,.055); }
+html[data-theme="light"] .clive-site-brand,
+html[data-theme="light"] .clive-brand-wordmark { color:#173249!important; }
+html[data-theme="light"] .clive-brand-emblem {background:#e6f4f2;border-color:#b1d8d4;color:#087e73}
+html[data-theme="light"] .clive-site-link {color:#51697e!important}
+html[data-theme="light"] .clive-site-link:hover {color:#075c5c!important;background:#edf5f6!important}
+html[data-theme="light"] .clive-site-link.active,
+html[data-theme="light"] .clive-site-link.selected,
+html[data-theme="light"] .clive-site-link[aria-current=page] {background:#e4f3f0!important;color:#096f66!important;border-color:#a9d5cc!important}
+html[data-theme="light"] .clive-run-context select {color:#1b354b!important;background:#f8fafc!important;border-color:#bccddb!important}
+.clive-theme-toggle {display:inline-flex!important;align-items:center;justify-content:center;gap:6px;flex:0 0 auto;min-width:104px;min-height:36px;padding:7px 10px!important;border:1px solid #43566b!important;border-radius:8px!important;background:#182938!important;color:#cfe8ee!important;font-size:11px!important;line-height:1!important;font-weight:750!important;white-space:nowrap;cursor:pointer}
+.clive-theme-toggle:hover {border-color:#75c1d2!important}
+.clive-theme-toggle .theme-icon{font-size:16px}
+html[data-theme="light"] .clive-theme-toggle {background:#edf5f5!important;color:#096b70!important;border-color:#b4d5d5!important}
+html[data-theme="light"] .clive-theme-toggle:hover {background:#dfefee!important}
+@media(max-width:1220px){.clive-site-context{gap:7px!important}.clive-theme-toggle{min-width:38px;padding:7px 9px!important}.clive-theme-toggle .theme-label{display:none}.clive-site-header .clive-run-context select{max-width:150px!important;width:min(150px,100%)!important}}
+@media(max-width:640px){.clive-theme-toggle{min-width:34px;min-height:34px;padding:6px 8px!important}}
+html[data-theme="light"] .workspace,
+html[data-theme="light"] .view {background:#f4f7fb;color:#183047}
+html[data-theme="light"] .page-heading h1,
+html[data-theme="light"] .editor-toolbar .scenario-title strong {color:#1d364b}
+html[data-theme="light"] .subtext,
+html[data-theme="light"] .muted-heading,
+html[data-theme="light"] .field-note {color:#536e82}
+html[data-theme="light"] .hero-strip {background:#fff;border-color:#d9e3ed}
+html[data-theme="light"] .hero-item,
+html[data-theme="light"] .hero-status {background:#fff;border-color:#dee7ee}
+html[data-theme="light"] .hero-item span {color:#536b81}
+html[data-theme="light"] .hero-item strong {color:#183347}
+html[data-theme="light"] .editor-toolbar,
+html[data-theme="light"] .settings-panel,
+html[data-theme="light"] .panel,
+html[data-theme="light"] .section-card,
+html[data-theme="light"] .monitor-grid>.panel,
+html[data-theme="light"] .status-card {background:#fff;border-color:#dae4ed;box-shadow:var(--shadow)}
+html[data-theme="light"] .section-card>.section-head {background:#f9fbfd;border-bottom-color:#e1e8ef}
+html[data-theme="light"] .section-icon {background:#e4f4f1;color:#08796e}
+html[data-theme="light"] .section-head strong,
+html[data-theme="light"] .field-label {color:#234158}
+html[data-theme="light"] .section-head small {color:#587085}
+html[data-theme="light"] :is(button,input,select,textarea) {color:#223f54}
+html[data-theme="light"] :is(.save-row input,.field input,.field select,.pair-row input,.map-row input,.list-row input,.history-toolbar input) {background:#fff;color:#1b354b;border-color:#bdcddd}
+html[data-theme="light"] input::placeholder {color:#72869b}
+html[data-theme="light"] .outlined {background:#fff;border-color:#bccfdf;color:#284c63}
+html[data-theme="light"] .outlined:hover {background:#ecf5f8}
+html[data-theme="light"] .primary {background:#087e76;border-color:#08756f;color:#fff}
+html[data-theme="light"] .danger {background:#fff2f1;color:#ad3044;border-color:#dfadb7}
+html[data-theme="light"] .section-tabs {border-color:#e0e8ef}
+html[data-theme="light"] .tab {color:#546c80}
+html[data-theme="light"] .tab.active {color:#087a73;border-color:#087a73}
+html[data-theme="light"] .tab:hover {color:#0e7069}
+html[data-theme="light"] .complex-field,
+html[data-theme="light"] .advanced-settings {border-color:#d9e4ed;background:#fafcfd}
+html[data-theme="light"] .advanced-settings>summary {color:#385b70}
+html[data-theme="light"] .advanced-settings>summary:hover {color:#086e6a;background:#eaf4f4}
+html[data-theme="light"] .toggle {color:#2f4f63}
+html[data-theme="light"] .toggle input {background:#cad8e2}
+html[data-theme="light"] .toggle input:checked {background:#148980}
+html[data-theme="light"] .metric-box {background:#f4f8fb;border-color:#d9e5ee}
+html[data-theme="light"] .metric-box strong {color:#1d3c53}
+html[data-theme="light"] .run-status-strip {background:#eef8f8;border-color:#b5d9d8}
+html[data-theme="light"] .run-status-main strong,
+html[data-theme="light"] .big-status {color:#1c3d4b}
+html[data-theme="light"] .progress-track {background:#dfebf1}
+html[data-theme="light"] .console-panel pre,
+html[data-theme="light"] .run-log-details pre {background:#f4f8fa;border-color:#d0e1e9;color:#294f5f}
+html[data-theme="light"] .history-entry {border-bottom-color:#e2eaf0;color:#1d3950}
+html[data-theme="light"] .history-entry:hover {background:#ecf5fa}
+html[data-theme="light"] .history-entry small {color:#667c8f}
+html[data-theme="light"] .run-log-details {border-color:#dae6ee}
+html[data-theme="light"] .run-log-details summary {color:#2c6072}
+html[data-theme="light"] .run-detail-grid strong {color:#1e3c50}
+html[data-theme="light"] .workload-notice {background:#eef5fb;color:#36576c;border-color:#c2d6e3}
+html[data-theme="light"] .workload-notice.proxy {background:#fff4e0;border-color:#e6cb96;color:#815708}
+html[data-theme="light"] .workload-notice.real {background:#e9f7f1;border-color:#acd7c3;color:#226849}
+html[data-theme="light"] #toast {background:#e4f5f0;border-color:#9dcbbb;color:#176343}
+html[data-theme="light"] #toast.error {background:#ffedf1;border-color:#e2abb4;color:#a52e42}
+html[data-theme="light"] .status-card p:not(.muted-heading) {color:#4e6b80}
+html[data-theme="light"] .advanced-presets {border-color:#dbe6ee}
+html[data-theme="light"] .advanced-presets>summary {color:#466a7f}
+html[data-theme="light"] :is(.add-btn,.remove-btn) {background:#edf7f6;border-color:#a8d6ce;color:#14695d}
+
+/* Light-mode interaction fixes: sidebar selections, hovers, and button states. */
+html[data-theme="light"] .sidebar {
+  background:#ffffff;
+  border-right-color:#d8e2eb;
+}
+html[data-theme="light"] .side-rule,
+html[data-theme="light"] .side-bottom { border-color:#dbe4ec; }
+html[data-theme="light"] .nav-label,
+html[data-theme="light"] .sideheading,
+html[data-theme="light"] .preset-group,
+html[data-theme="light"] .breadcrumb,
+html[data-theme="light"] .live-clock { color:#61798d; }
+html[data-theme="light"] .sideheading button {
+  color:#5d778d;
+}
+html[data-theme="light"] .sideheading button:hover {
+  color:#096d67;
+  background:#edf5f6;
+}
+html[data-theme="light"] .nav-item {
+  color:#51697d;
+}
+html[data-theme="light"] .nav-item:hover {
+  background:#eef5f8;
+  border-color:#d3e1ea;
+  color:#14374d;
+}
+html[data-theme="light"] .nav-item.selected {
+  background:#e5f3f0;
+  color:#086f67;
+  border-color:#a8d4cd;
+  box-shadow:inset 3px 0 #087e76;
+}
+html[data-theme="light"] .mini-dot { background:#a7b7c5; }
+html[data-theme="light"] .preset-item {
+  color:#4f697d;
+}
+html[data-theme="light"] .preset-item::before { color:#7a93aa; }
+html[data-theme="light"] .preset-item:hover {
+  background:#eef5f8;
+  border-color:#d4e0ea;
+  color:#15384f;
+}
+html[data-theme="light"] .preset-item.active {
+  background:#17384b;
+  color:#ffffff;
+  border-color:#2c6077;
+}
+html[data-theme="light"] .preset-item.active::before { color:#7fe0d7; }
+html[data-theme="light"] .preset-item.active:hover {
+  background:#1d455a;
+  border-color:#36738f;
+  color:#ffffff;
+}
+html[data-theme="light"] .topbar {
+  background:#ffffff;
+  border-bottom-color:#d9e3ed;
+}
+html[data-theme="light"] .state-badge {
+  background:#f4f7fa;
+  border-color:#d5e0e9;
+  color:#5f768a;
+}
+html[data-theme="light"] .state-badge.running {
+  background:#e8f6f3;
+  border-color:#abd4c8;
+  color:#0d7067;
+}
+html[data-theme="light"] .state-badge.complete {
+  background:#eaf8ef;
+  border-color:#b9dec5;
+  color:#2c7a4b;
+}
+html[data-theme="light"] .state-badge.failed {
+  background:#fff1f3;
+  border-color:#e7bcc5;
+  color:#b33849;
+}
+html[data-theme="light"] .outlined:hover {
+  background:#edf5f8;
+  border-color:#9fb8cb;
+  color:#17384d;
+}
+html[data-theme="light"] .primary:hover:not(:disabled) {
+  background:#0a8f86;
+  border-color:#0a8f86;
+  color:#ffffff;
+}
+html[data-theme="light"] .danger:hover:not(:disabled) {
+  background:#fde8eb;
+  border-color:#d98b98;
+  color:#9f2739;
+}
+html[data-theme="light"] .add-btn:hover {
+  background:#e4f3f0;
+  border-color:#8fc7bd;
+  color:#0f675f;
+}
+html[data-theme="light"] .remove-btn:hover {
+  background:#fff0f2;
+  border-color:#e3acb7;
+  color:#b23648;
+}
+
+/* -----------------------------------------------------------------------
+   Panel-ready light UI polish (2026-11-17)
+   One coherent interaction system rather than ad-hoc dark hover leftovers.
+   Dark theme and the emulator's data/protocol behavior are unchanged.
+   ----------------------------------------------------------------------- */
+html[data-theme="light"] {
+  --bg:#f2f5f9;
+  --sidebar:#fff;
+  --panel:#fff;
+  --panel2:#f8fafc;
+  --stroke:#cbd9e5;
+  --text:#172f44;
+  --sub:#465f75;
+  --faint:#587187;
+  --aqua:#08756e;
+  --blue:#126b9b;
+  --danger:#b72f44;
+  --shadow:0 3px 16px rgba(31,65,95,.052);
+  --clive-shell-accent:#08756e;
+}
+html[data-theme="light"] body,
+html[data-theme="light"] .workspace,
+html[data-theme="light"] .view {background:#f2f5f9;color:var(--text)}
+/* Selected is a light-mode state, not a leftover dark block. */
+html[data-theme="light"] .sidebar{background:#fff;border-right-color:#d3e0ea}
+html[data-theme="light"] .preset-list{scrollbar-color:#bacbd8 #fff}
+html[data-theme="light"] .preset-item {color:#354f64;border-radius:8px;line-height:1.4;transition:background-color .12s ease,color .12s ease,border-color .12s ease}
+html[data-theme="light"] .preset-item:hover:not(.active){background:#ecf3f8;border-color:#d2e0e9;color:#163d57}
+html[data-theme="light"] .preset-item.active{
+ background:#e3f3f0;color:#075d59;border-color:#79c2b7;
+ box-shadow:inset 3px 0 #08776d;font-weight:750;
+}
+html[data-theme="light"] .preset-item.active:hover{background:#d5ece7;color:#064f4b;border-color:#6eb7ad}
+html[data-theme="light"] .preset-item.active::before{color:#086e68}
+html[data-theme="light"] .nav-item:hover:not(.selected){background:#ecf3f8;border-color:#d0e0e9;color:#16425e}
+html[data-theme="light"] .nav-item.selected,
+html[data-theme="light"] .nav-item.selected:hover{background:#e4f2ee;border-color:#93cdc2;color:#075d59}
+html[data-theme="light"] .sideheading button:hover{background:#ebf4f5;color:#086f68;border-radius:7px}
+html[data-theme="light"] .topbar{background:#fff;border-bottom-color:#d6e2eb}
+/* Main actions: high-contrast filled primary and danger buttons. */
+html[data-theme="light"] .primary,
+html[data-theme="light"] button.primary:not(:disabled){
+ background:#08756e;border:1px solid #086d67;color:#fff;
+ box-shadow:0 2px 6px rgba(8,85,79,.12);
+}
+html[data-theme="light"] .primary:hover:not(:disabled),
+html[data-theme="light"] button.primary:hover:not(:disabled){background:#065c58;border-color:#065c58;color:#fff;box-shadow:0 4px 9px rgba(6,83,76,.16)}
+html[data-theme="light"] .danger:not(:disabled){
+ background:#b72f44;color:#fff;border:1px solid #a8273b;
+ box-shadow:0 2px 6px rgba(125,37,50,.10);
+}
+html[data-theme="light"] .danger:hover:not(:disabled){background:#942436;border-color:#942436;color:#fff}
+html[data-theme="light"] .outlined {background:#fff;color:#23455d;border-color:#b4c9d8}
+html[data-theme="light"] .outlined:hover:not(:disabled){background:#e9f2f7;border-color:#7fa8c2;color:#0d4c6e}
+/* Disabled controls remain legible and are visibly noninteractive, not faded red. */
+html[data-theme="light"] :is(button,.primary,.danger,.outlined):disabled,
+html[data-theme="light"] button[aria-disabled="true"]{
+ opacity:1;cursor:not-allowed;background:#edf1f4;color:#586e80;
+ border-color:#d0d9e0;box-shadow:none;
+}
+html[data-theme="light"] :is(button,.primary,.danger,.outlined):disabled:hover,
+html[data-theme="light"] button[aria-disabled="true"]:hover{
+ background:#edf1f4;color:#586e80;border-color:#d0d9e0;box-shadow:none;
+}
+html[data-theme="light"] :is(.save-row input,.field input,.field select,.pair-row input,.map-row input,.list-row input,.history-toolbar input){
+ background:#fff;color:#19384e;border:1px solid #b6cad9;
+}
+html[data-theme="light"] :is(.save-row input,.field input,.field select,.pair-row input,.map-row input,.list-row input,.history-toolbar input):hover:not(:disabled){border-color:#88a9bf}
+html[data-theme="light"] :is(.save-row input,.field input,.field select,.pair-row input,.map-row input,.list-row input,.history-toolbar input):focus{
+ outline:2px solid #117a85;outline-offset:1px;border-color:#117a85;box-shadow:0 0 0 3px rgba(17,122,133,.12);
+}
+html[data-theme="light"] .tab{color:#46657b;border-radius:7px 7px 0 0}
+html[data-theme="light"] .tab:hover:not(.active){background:#eaf2f6;color:#095d7d}
+html[data-theme="light"] .tab.active{background:#e8f5f1;color:#076c64;border-bottom-color:#08756e}
+/* Slightly tighter, cleaner editor surfaces with intact functionality. */
+html[data-theme="light"] .section-card,html[data-theme="light"] .editor-toolbar,
+html[data-theme="light"] .panel,html[data-theme="light"] .hero-strip{border-color:#d2dfe9;box-shadow:var(--shadow)}
+html[data-theme="light"] .section-card>.section-head{background:#f8fafc;border-bottom-color:#dae5ed}
+html[data-theme="light"] .hero-item{border-right-color:#dde7ee}
+html[data-theme="light"] .hero-item span{color:#536d82}
+html[data-theme="light"] .hero-item strong{color:#152f45}
+html[data-theme="light"] .hero-status{color:#076e67}
+html[data-theme="light"] .run-status-strip{background:#edf8f5;border:1px solid #a8d6cc;box-shadow:0 2px 10px rgba(30,80,77,.045)}
+html[data-theme="light"] .run-status-main strong{color:#173d4c}
+html[data-theme="light"] .run-status-actions .run-elapsed{color:#415f74}
+html[data-theme="light"] .run-log-details summary:hover,
+html[data-theme="light"] .advanced-settings>summary:hover,
+html[data-theme="light"] .advanced-presets>summary:hover {background:#e6f1f4;color:#095d76}
+html[data-theme="light"] .progress-track{background:#cfdee5}
+html[data-theme="light"] .history-entry:hover{background:#ebf4f8}
+html[data-theme="light"] .history-entry:focus-visible{background:#e6f3f4}
+html[data-theme="light"] :is(.add-btn,.remove-btn):hover{box-shadow:0 1px 5px rgba(22,66,94,.08)}
+html[data-theme="light"] #toast {background:#e1f5ea;color:#155a3e;border-color:#91c5ad}
+html[data-theme="light"] #toast.error {background:#ffeaf0;color:#94283a;border-color:#df9ca9}
+html[data-theme="light"] :is(button,a,input,select,summary):focus-visible{outline:2px solid #0c7683;outline-offset:2px}
+@media(prefers-reduced-motion:reduce){html[data-theme="light"] .preset-item{transition:none}}

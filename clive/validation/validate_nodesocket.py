@@ -117,9 +117,9 @@ def test_math():
     report("Table 3-3 link mapping", ok)
 
     bits, distance = 800, 3.0
-    tx = bits * (cfg.e_elec_j_per_bit + cfg.e_amp_j_per_bit_m2 * distance ** cfg.pathloss_exponent)
+    tx = bits * (cfg.e_elec_j_per_bit + cfg.e_amp_j_per_bit_mn * distance ** cfg.pathloss_exponent)
     rx = bits * cfg.e_elec_j_per_bit
-    report("Equations 3-13/3-14 energy", math.isclose(energy_tx(bits, distance, cfg), tx) and math.isclose(energy_rx(bits, cfg), rx))
+    report("Equations 3-13/3-14 energy (100 pJ, d**n)", math.isclose(energy_tx(bits, distance, cfg), tx) and math.isclose(energy_rx(bits, cfg), rx))
 
     raw = bytes([0x1F, 0x80, 0x12, 0x34])
     report("Common-header parsing", parse_common_header(raw) == {

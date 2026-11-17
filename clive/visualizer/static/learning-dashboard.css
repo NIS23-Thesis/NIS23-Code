@@ -1,0 +1,232 @@
+/* CLIVE Model Learning: compact information hierarchy, not a stack of unrelated cards. */
+.learning-page .learning-shell{max-width:1600px!important;margin:0 auto!important;padding:18px var(--clive-page-inset) 28px!important}
+.learning-toolbar{display:flex;align-items:end;justify-content:space-between;flex-wrap:wrap;gap:14px;margin-bottom:10px}
+.learning-title .eyebrow{font-size:10px;letter-spacing:.15em}
+.learning-title h1{margin:2px 0 0;font-size:23px;line-height:1.25;letter-spacing:-.02em}
+.learning-page .learning-filters{display:flex;align-items:end;flex-wrap:wrap;gap:8px;margin:0}
+.learning-page .learning-filters label{min-width:112px;gap:3px;font-size:11px}
+.learning-page .learning-filters select{height:36px;min-width:115px;max-width:180px;padding:6px 10px}
+.learning-page .learning-filters button{height:36px;padding:6px 13px}
+.learning-page .learning-kpis{margin:8px 0 11px;gap:9px;grid-template-columns:repeat(4,minmax(0,1fr))}
+.learning-page .learning-kpis .number{padding:10px 13px;min-height:68px;border-radius:10px}
+.learning-page .learning-kpis .number strong{font-size:20px;margin-top:2px;font-variant-numeric:tabular-nums}
+.learning-page .learning-kpis .number span{font-size:11px;white-space:normal}
+.learning-notice{border:1px solid #355773;color:#b6d9ee;background:#172738;padding:8px 12px;border-radius:9px;margin:8px 0;font-size:12px}
+.learning-notice[data-error="true"]{border-color:#8d554e;color:#ffc2ae;background:#3a2625}
+.learning-notice[hidden]{display:none}
+.learning-grid{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));grid-template-rows:auto auto auto;gap:11px;align-items:stretch}
+.learning-page .learning-grid>.card{min-width:0;margin:0;padding:12px 14px;border-radius:12px;overflow:hidden}
+.learning-grid h2,.learning-grid #chartHeading{font-size:13px;line-height:1.35;font-weight:750;color:#eaf3fa}
+.learning-page .learning-grid .heading-help{min-height:24px;gap:6px}
+.learning-grid .help-trigger{width:21px;height:21px;min-width:21px;font-size:12px}
+.learning-chart-panel{grid-column:1/-1;grid-row:1;min-height:308px}
+.learning-distribution-panel{grid-column:1/span 7;grid-row:2;min-height:155px}
+.learning-quality-panel{grid-column:8/-1;grid-row:2;min-height:123px}
+.learning-inspector-panel{grid-column:1/-1;grid-row:3;min-height:180px}
+.learning-page .learning-chart-panel .chart-box{height:273px;margin-top:3px}
+.learning-page .learning-chart-panel .legend{margin-top:3px;gap:12px;font-size:11px}
+.learning-page .learning-grid table{font-size:11px;line-height:1.4}
+.learning-page .learning-grid th{font-size:10px;white-space:nowrap;letter-spacing:.025em}
+.learning-page .learning-grid th,.learning-page .learning-grid td{padding:6px 5px}
+.learning-page .learning-grid td{font-variant-numeric:tabular-nums}
+.learning-page .learning-grid tbody tr:hover{background:rgba(112,223,199,.055)}
+.learning-table-scroll{overflow:auto;overscroll-behavior:contain;max-height:246px;margin-top:6px}
+.learning-quality-panel .learning-table-scroll{max-height:195px}
+.learning-history-panel .learning-table-scroll{max-height:220px}
+.learning-digits-panel .learning-table-scroll{max-height:235px}
+.learning-quality-panel table{min-width:345px}
+.learning-history-panel table{min-width:470px}
+.learning-page .learning-grid .learning-card-header{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.learning-compact-action{padding:5px 8px!important;font-size:11px!important;white-space:nowrap}
+.detail-context{font-size:10px;color:#8daabe;white-space:nowrap}
+.learning-digit-filter{display:flex;align-items:center;gap:8px;margin-top:6px;font-size:11px;color:var(--muted)}
+.learning-digit-filter select{height:31px;min-width:62px;padding:4px 7px;font-size:12px}
+.learning-prediction-summary{font-size:11px;line-height:1.45;min-height:30px;margin:6px 0 2px}
+.learning-page .learning-grid .confidence-bars{margin-top:6px;gap:5px;max-width:100%;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));column-gap:24px}
+.learning-page .learning-grid .confidence-row{font-size:11px;gap:7px;grid-template-columns:1.4em minmax(0,1fr) 4em}
+.learning-page .learning-grid .confidence-track{height:12px}
+.learning-page .learning-grid details{padding-top:8px;margin-top:8px}
+.learning-page .learning-grid summary{font-size:11px}
+.learning-page .learning-grid .empty{padding:60px 12px;font-size:12px}
+/* CH-scoped digit distribution: exactly one Cluster Head, ten readable bars. */
+.learning-page .learning-card-header{flex-wrap:wrap;gap:8px}
+.panel-ch-picker,.distribution-header-actions label{display:inline-flex;align-items:center;gap:6px;color:#a9bfd0;font-size:10px;white-space:nowrap}
+.panel-card-actions,.distribution-header-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-left:auto}
+.learning-page .learning-grid .panel-ch-picker select,.learning-page .learning-grid .distribution-header-actions select{height:30px;min-width:96px;max-width:180px;width:auto;padding:4px 24px 4px 8px;border:1px solid #40576b;border-radius:7px;background:#192c3b;color:#e6f4fa;font-size:11px}
+.learning-page .learning-grid #distributionSort{min-width:118px}
+.learning-page .learning-grid #chartCHSelect{min-width:130px}
+.learning-page .learning-grid #qualityCHSelect{max-width:140px;min-width:110px}
+.learning-page .learning-grid #qualitySort{max-width:120px;min-width:95px}
+.distribution-summary{display:flex;align-items:center;gap:8px 14px;flex-wrap:wrap;color:#a9c3d1;font-size:11px;margin:6px 0 10px;min-height:23px}
+.distribution-summary strong{color:#f2f7ff}
+.distribution-current{display:inline-flex;align-items:center;gap:7px;color:var(--distribution-ch-color);font-weight:800}
+.single-digit-bars{display:grid;gap:5px;margin-top:5px}
+.single-digit-row{display:grid;grid-template-columns:21px minmax(0,1fr) 38px 35px;gap:8px;align-items:center;font-variant-numeric:tabular-nums;font-size:11px;min-height:21px;color:#cdddea}
+.single-digit-label{font-weight:750;color:#c9dce6;text-align:center}
+.single-digit-row.is-dominant .single-digit-label{color:var(--distribution-ch-color)}
+.single-digit-track{height:13px;border-radius:5px;background:#0c1b29;border:1px solid #304454;overflow:hidden}
+.single-digit-fill{height:100%;display:block;border-radius:4px;background:var(--distribution-ch-color);opacity:.77}
+.single-digit-row.is-dominant .single-digit-fill{opacity:1}
+.single-digit-row strong{text-align:right;color:#ebf5fb;font-size:11px}
+.single-digit-row small{text-align:right;color:#a2bac8;font-size:10px}
+.distribution-single-empty{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:15px 0;color:#9bb6c7;font-size:11px}
+@media(max-width:700px){
+ .learning-page .learning-grid .learning-card-header{align-items:flex-start;gap:7px}
+ .learning-page .learning-grid .panel-card-actions{gap:6px}
+ .learning-page .learning-grid .distribution-header-actions{width:100%;margin-left:0}
+ .single-digit-row{grid-template-columns:17px minmax(0,1fr) 35px 30px;gap:5px}
+}
+
+/* One inspection workspace, three distinct detailed views. */
+.learning-inspector-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:9px;padding-bottom:9px;border-bottom:1px solid #293b4d}
+.learning-inspector-title h2{font-size:13px;margin:0}
+.learning-detail-tabs{display:flex;align-items:center;gap:4px;background:#0d1926;border-radius:8px;padding:3px;border:1px solid #2b4052}
+.learning-detail-tabs .detail-tab{font-size:11px;min-height:29px;padding:5px 11px;border:0;border-radius:6px;background:transparent;color:#aac2d4;white-space:nowrap;cursor:pointer}
+.learning-detail-tabs .detail-tab[aria-selected="true"]{background:#224151;color:#8bf0d8;font-weight:700}
+.learning-detail-tabs .detail-tab:hover{color:#f0f8ff}
+.learning-detail-pane[hidden]{display:none!important}
+.learning-detail-pane .learning-card-header{margin-bottom:5px}
+.learning-detail-pane .learning-card-header h2{font-size:12px}
+.learning-detail-pane{min-height:125px}
+/* The model-quality curve is always the primary panel. Missing measurements
+   show an honest empty state; secondary panels must never replace it. */
+@media(max-width:1050px){
+}
+@media(max-width:840px){
+ .learning-chart-panel{grid-column:1/-1;grid-row:1;min-height:0}
+ .learning-distribution-panel{grid-column:1/-1;grid-row:2;min-height:0}
+ .learning-quality-panel{grid-column:1/-1;grid-row:3;min-height:0}
+ .learning-inspector-panel{grid-column:1/-1;grid-row:4}
+ .learning-grid{grid-template-rows:auto}
+ .learning-page .learning-chart-panel .chart-box{height:235px}
+ .learning-page .learning-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+@media(max-width:640px){
+ .learning-page .learning-shell{padding:13px 12px 26px!important}
+ .learning-page .learning-filters{width:100%;display:grid;grid-template-columns:1fr 1fr auto}
+ .learning-page .learning-filters label{min-width:0}
+ .learning-page .learning-filters select{min-width:0;width:100%}
+ .learning-grid{gap:9px}
+ .learning-page .learning-grid>.card{padding:11px}
+ .learning-page .learning-chart-panel .chart-box{height:210px}
+ .learning-inspector-head{align-items:flex-start;flex-direction:column;gap:7px}
+ .learning-detail-tabs{width:100%;justify-content:space-between}
+ .learning-detail-tabs .detail-tab{flex:1;padding:6px 5px}
+ .learning-page .learning-grid .confidence-bars{grid-template-columns:1fr}
+}
+
+@media(max-width:640px){
+ /* Model updates are readable, two-line records rather than a clipped 6-column table. */
+ .learning-history-panel .learning-table-scroll{max-height:340px;overflow-y:auto;overflow-x:hidden}
+ .learning-history-panel table{min-width:0;width:100%;display:block}
+ .learning-history-panel thead{display:none}
+ .learning-history-panel tbody{display:block}
+ .learning-history-panel #history tr{display:grid;grid-template-columns:.85fr .6fr 1.5fr;gap:5px 8px;padding:9px 1px;border-bottom:1px solid #314458}
+ .learning-history-panel #history td{display:flex;flex-direction:column;gap:2px;min-width:0;padding:1px 0;border:0;white-space:normal;overflow-wrap:anywhere}
+ .learning-history-panel #history td::before{content:attr(data-label);color:#8fa9bb;font-size:9px;line-height:1.1;letter-spacing:.03em;text-transform:uppercase}
+ .learning-history-panel #history td[colspan]{grid-column:1/-1}
+ .learning-history-panel #history td[colspan]::before{display:none}
+}
+
+/* Dashboard polish: a consistent CH identity key across every data region.
+   Dense, comparable cards and direct access to the existing CH filter. */
+.learning-page .learning-grid>.card{border:1px solid #304658;box-shadow:0 1px 0 rgba(191,229,240,.025);background:#16222f}
+.learning-page .learning-grid>.card:focus-within{border-color:#466c7b}
+.learning-page .learning-kpis .number{background:#152332;border:1px solid #304658}
+.learning-page .learning-kpis .number strong{font-size:22px;letter-spacing:-.025em}
+.learning-page .learning-grid th{color:#9fb6c9}
+.learning-page .learning-grid td{color:#d5e3ed}
+.learning-page .learning-grid .received-digit-rows{scrollbar-color:#385366 #152330}
+.learning-page .learning-grid .learning-table-scroll{scrollbar-color:#385366 #152330}
+.ch-label{display:inline-flex;align-items:center;gap:7px;max-width:100%;color:var(--ch-color,#67ddd0);font-size:inherit;font-weight:750;white-space:nowrap}
+.ch-swatch{display:inline-block;flex:0 0 9px;width:9px;height:9px;background:var(--ch-color,#67ddd0);border-radius:3px;box-shadow:0 0 0 1px #111b24}
+.learning-chart-panel .legend{display:flex;gap:7px!important;flex-wrap:wrap}
+.ch-legend-item{display:inline-flex;align-items:center;gap:7px;border:1px solid #344b5d;border-radius:7px;background:#10202e;color:#d8e5ee;cursor:pointer;font-size:11px;line-height:1.1;padding:6px 9px}
+.ch-legend-item i{display:inline-block!important;width:14px!important;height:3px!important;margin:0!important;background:var(--ch-color)!important;border-radius:3px}
+.ch-legend-item:hover,.ch-legend-item:focus-visible{color:#fff;border-color:var(--ch-color);background:#1e3444;outline:none}
+.ch-legend-item:focus-visible{box-shadow:0 0 0 2px #b3e6e0}
+.learning-page .learning-grid .learning-inspector-panel{background:#13202d}
+.learning-page .learning-grid tbody tr:hover{background:rgba(137,211,224,.075)}
+/* Primary chart always leads; distribution and comparison share the next row. */
+@media(min-width:841px){.learning-grid{column-gap:13px;row-gap:13px}
+ .learning-chart-panel{grid-column:1/-1;grid-row:1}
+ .learning-distribution-panel{grid-column:1/span 7;grid-row:2}
+ .learning-quality-panel{grid-column:8/-1;grid-row:2}
+ .learning-inspector-panel{grid-column:1/-1;grid-row:3}}
+@media(max-width:640px){.ch-label{gap:5px}.ch-swatch{width:7px;height:7px;flex-basis:7px}
+ .ch-legend-item{padding:7px 9px}}
+/* A fixed chart plot prevents canvas auto-sizing feedback during redraws.
+   Match the adjacent two-panel composition without excess dead space. */
+@media(min-width:841px){
+ .learning-page .learning-chart-panel .chart-box{height:280px;min-height:0}
+}
+
+/* Selected CH is visible on every identity control without recoloring it. */
+.ch-legend-item[aria-pressed="true"]{background:color-mix(in srgb,var(--ch-color) 15%,#122432);border-color:var(--ch-color)}
+
+
+/* The chart is the centerpiece, even in runs without held-out evaluations.
+   Never confuse unavailable measurement data with an absent dashboard feature. */
+.learning-page .learning-chart-panel .chart-box{position:relative}
+.learning-page .learning-chart-panel #chartEmpty:not([hidden]){
+ position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+ margin:0;padding:20px;text-align:center;z-index:2;
+ color:#bcd2e0;background:#142330ed;border:1px dashed #3c5668;border-radius:8px;
+ font-size:12px;line-height:1.5
+}
+
+/* In runs lacking measured accuracy/F1, do not waste a full chart-sized
+   rectangle. The chart remains the first panel, never hidden or displaced. */
+.learning-grid.no-quality-metrics .learning-chart-panel{min-height:0}
+.learning-page .learning-grid.no-quality-metrics .learning-chart-panel .chart-box{height:145px;min-height:0}
+@media(max-width:640px){
+ .learning-page .learning-grid.no-quality-metrics .learning-chart-panel .chart-box{height:125px}
+}
+
+
+/* The global filter and local panel controls are intentionally independent. */
+.learning-page .learning-filters{align-items:end}
+.learning-page .learning-filters label:first-child{font-weight:700}
+.learning-page .learning-inspector-head{flex-wrap:wrap}
+.learning-page .learning-inspector-head>.panel-ch-picker{margin-left:auto}
+@media(max-width:640px){
+ .learning-page .learning-filters{grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto}
+ .learning-page .learning-inspector-head>.panel-ch-picker{margin-left:0}
+}
+
+/* Make stale-but-valid sampled measurements explicitly traceable. */
+.metric-provenance{display:block;color:#91a4b9;font-size:10px;font-weight:500;margin-top:3px;white-space:nowrap}
+
+/* Evidence for each revision: compact and legible without inventing training inputs. */
+.revision-evidence { min-width: 205px; max-width: 355px; white-space: normal; line-height: 1.35; }
+.revision-evidence-title { display: block; font-weight: 600; }
+.revision-evidence small { display: block; opacity: .8; margin-top: 2px; }
+.revision-evidence-muted { opacity: .7; }
+
+/* Revision inspection: history drives the digit panel without modifying learning data. */
+.learning-distribution-panel .distribution-revision-controls{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin-top:8px}
+.learning-distribution-panel .distribution-revision-controls[hidden],
+.learning-distribution-panel .distribution-revision-controls label[hidden]{display:none!important}
+.distribution-revision-controls label{display:inline-flex;align-items:center;gap:7px;font-size:11px;color:#b2c9d7}
+.learning-page .learning-grid #revisionDigitMode{height:30px;min-width:164px;padding:4px 23px 4px 8px;border:1px solid #40576b;border-radius:7px;background:#192c3b;color:#e6f4fa;font-size:11px}
+.distribution-revision-controls button{padding:5px 9px!important;border-radius:7px;background:#223a4a;color:#d3eff0;border:1px solid #476476;cursor:pointer}
+.revision-inspect-button{font:inherit;font-variant-numeric:tabular-nums;color:#9cdbef;background:transparent;border:1px solid transparent;border-radius:5px;padding:4px 5px;margin:-4px -5px;cursor:pointer}
+.revision-inspect-button:hover,.revision-inspect-button:focus-visible{background:#244154;color:#f1ffff;border-color:#54878e;outline-offset:2px}
+.learning-history-panel #history tr.is-selected{background:rgba(103,221,208,.115);box-shadow:inset 3px 0 0 #67ddd0}
+.learning-history-panel #history tr.is-selected .revision-inspect-button{color:#96ffe0;font-weight:750}
+.revision-peer-message{padding:18px 16px;margin:8px 0;display:flex;flex-direction:column;gap:8px;border:1px solid #496977;background:#192d3b;border-radius:10px;color:#c3d8e6;line-height:1.5;font-size:12px}
+.revision-peer-message strong{color:#a0ebdd;font-size:14px}
+@media(max-width:640px){.distribution-revision-controls{width:100%}.distribution-revision-controls label{flex-wrap:wrap}.learning-page .learning-grid #revisionDigitMode{min-width:150px}}
+
+.learning-history-panel #history tr[data-revision-index]{cursor:pointer}
+
+/* The panel's revision selector is available even before the user clicks the history. */
+.learning-distribution-panel .distribution-revision-controls{margin-bottom:6px;gap:8px}
+.learning-distribution-panel #distributionRevisionSelect{max-width:min(340px,65vw);min-width:175px}
+.learning-distribution-panel #revisionDigitMode{max-width:min(295px,70vw)}
+.learning-distribution-panel .distribution-explainer{font-size:11px;line-height:1.45;color:#a3bdcb;margin:4px 0 7px}
+.learning-history-panel .history-detail-toggle{display:inline-flex;align-items:center;gap:6px;font-size:11px;color:#bfd4e1;white-space:nowrap}
+.learning-history-panel .history-detail-toggle input{accent-color:#67ddd0}
+.learning-history-panel.compact-evidence .revision-evidence small{display:none!important}
+.learning-history-panel.compact-evidence .revision-evidence-title{font-size:10px}
+@media(max-width:640px){.learning-distribution-panel #distributionRevisionSelect{width:100%;max-width:100%;min-width:0}.learning-history-panel .history-detail-toggle{font-size:10px}}

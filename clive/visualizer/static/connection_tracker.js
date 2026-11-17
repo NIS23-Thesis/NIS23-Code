@@ -17,11 +17,12 @@ const CliveConnectionTracker = (() => {
     flame_member_expired: "Cluster Head marked sensor inactive",
     flame_join_pending_expired: "JOIN attempt expired before association",
     flame_model_sent: "Started peer model transfer",
-    flame_model_received: "Accepted complete peer model",
+    flame_model_received: "Peer update admitted to FLAME buffer (aggregation not yet confirmed)",
     flame_transfer_complete: "Transfer acknowledged complete",
     flame_transfer_failed: "Transfer failed",
     flame_model_retry_scheduled: "Model reattempt scheduled",
     flame_model_retry_exhausted: "Model reattempts exhausted",
+    flame_model_retry_superseded: "Model reattempt cancelled (superseded)",
   });
   const membershipEvents = new Set([
     "flame_ch_discovered", "flame_join_sent", "flame_joined", "flame_leave_sent",
@@ -84,7 +85,8 @@ const CliveConnectionTracker = (() => {
       state.lastExit.set(source, {ch: target, at: ev.time_s, reason: ev.reason || descriptions[action], action});
     }
     if (["flame_model_sent", "flame_model_received", "flame_transfer_complete", "flame_transfer_failed",
-      "flame_model_retry_scheduled", "flame_model_retry_exhausted"].includes(action) &&
+      "flame_model_retry_scheduled", "flame_model_retry_exhausted",
+      "flame_model_retry_superseded"].includes(action) &&
         (ev.packet_type == null || Number(ev.packet_type) === 4)) {
       const key = [source, target].sort().join("|");
       state.peers.set(key, ev.time_s); // Legacy topology expects last event time.

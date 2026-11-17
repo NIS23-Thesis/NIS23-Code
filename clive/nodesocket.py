@@ -31,6 +31,7 @@ from collections import defaultdict
 from itertools import count
 
 from orchestrator import DEFAULT_PORT, finite
+from capacity_settings import effective
 
 Address = tuple[str, int]
 BROADCAST_IP = "255.255.255.255"
@@ -161,11 +162,17 @@ class TokenBucket:
 
 
 def energy_tx(bits, distance_m, cfg):
+    """Generalized d**n analytical TX energy (joules), not measured power.
+
+    E_amp is in J/(bit*m**n), with the exponent specified by the link model.
+    The default 100 pJ/(bit*m**n) is an assumed parameter; it is not a
+    calibrated value from a device radio. RSSI/packet behavior is unchanged.
+    """
     finite(bits, "bits", 0)
     finite(distance_m, "distance_m", 0)
     return bits * (
         cfg.e_elec_j_per_bit
-        + cfg.e_amp_j_per_bit_m2 * float(distance_m) ** cfg.pathloss_exponent
+        + cfg.e_amp_j_per_bit_mn * float(distance_m) ** cfg.pathloss_exponent
     )
 
 
@@ -206,6 +213,7 @@ class MetricsCollector:
         "bits_received",
         "energy_received_j",
         "packets_dropped",
+        "broadcasts_without_receivers",
         "delivery_attempts",
         "delivery_drops",
         "kernel_datagrams_sent",
@@ -304,6 +312,7 @@ class _RadioEngine:
         self.trace = plan.open_trace()
         self.status = status_conn
         self._address_of = {node.name: node.address for node in plan.nodes}
+        self._underlay_of = {node.name: node.underlay_address for node in plan.nodes}
         self._node_index = {node.name: i for i, node in enumerate(plan.nodes)}
         self._broadcast_targets_by_port = {}
         for node in plan.nodes:
@@ -325,11 +334,10 @@ class _RadioEngine:
         self.metrics = MetricsCollector(spec.name, log_path)
         self._packet_debug = self.metrics.stream is not None
 
-        # TX gets its own socket and its own source port. Every virtual node already has a
-        # unique loopback IP, so receivers identify the sender by source IP and return the
-        # canonical NodeSpec address to the protocol.
+        # TX gets an ephemeral UDP port on this node's distinct underlay loopback
+        # IP. Receivers translate the physical source IP to the overlay identity.
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self._sock.bind((spec.ip, 0))
+        self._sock.bind((spec.underlay_address[0], 0))
 
     def set_epoch(self, epoch_start):
         finite(epoch_start, "epoch_start", 0, strictly=True)
@@ -436,8 +444,10 @@ class _RadioEngine:
             _, distance, _, link_rate, _, _, _ = links[0]
             airtime_rate = link_rate or self.cfg.max_data_rate_bps
             return airtime_rate, distance or 0.0, link_rate
-        energy_distance = max((link[1] or 0.0 for link in links if link[2]), default=0.0)
-        return self.cfg.max_data_rate_bps, energy_distance, None
+        # One broadcast uses one configured TX range/power irrespective of how
+        # many neighbors happen to be listening. Receiver geometry affects
+        # delivery and propagation, not the sender's broadcast-energy budget.
+        return self.cfg.max_data_rate_bps, self.cfg.tx_range_m(self.spec), None
 
     def _transmit(self, req):
         tick = self._current_mobility_tick()
@@ -450,23 +460,48 @@ class _RadioEngine:
 
         reachable_count = sum(1 for link in links if link[2])
         if reachable_count == 0:
-            if links:
+            if links or req["broadcast"]:
+                # A broadcast still goes on the air with zero registered listeners.
+                # Listening/receiving is not a prerequisite for a radio emission.
+                # The same applies when known peers are all out of range.
+                # A not-yet-emitted request cancelled at the time cutoff costs no TX.
+                # Wait before recording the emission and any per-peer drops.
+                radio_wait = self._shared_bucket.wait_time(
+                    req["bits"], self.cfg.max_data_rate_bps, now,
+                )
+                if radio_wait > 1e-9:
+                    self._push(now + radio_wait, "tx", req, None)
+                    return
+                if not self._shared_bucket.consume(
+                    req["bits"], self.cfg.max_data_rate_bps, now,
+                ):
+                    raise RuntimeError("shared airtime token accounting failed")
                 # Out of range means the RADIO TRANSMITTED but nobody heard it.
                 # Record one emission/energy cost and N recipient delivery failures.
-                # The TX energy estimate cannot exceed the configured radio range
-                # simply because a peer was placed arbitrarily far away.
+                # For broadcasts the configured sender range is the energy
+                # approximation, independent of how many receivers are listening.
+                # For unreachable unicasts, cap the estimate at sender range.
                 req["emitted"] = True
                 tx_distance = self.cfg.tx_range_m(self.spec)
                 counters = {"packets_sent": 1, "bits_sent": req["bits"],
                             "energy_sent_j": energy_tx(req["bits"], tx_distance, self.cfg)}
+                if req["broadcast"] and not links:
+                    # Zero eligible recipients is *not* a locally dropped TX
+                    # and is not a recipient-level delivery attempt/loss.
+                    counters["broadcasts_without_receivers"] = 1
                 if self._packet_debug:
                     self._event(req, "transmit", counters,
                                 energy_distance_m=tx_distance,
-                                energy_distance_policy="configured_radio_range_no_reachable_receiver",
+                                energy_distance_policy=("configured_broadcast_tx_range" if req["broadcast"]
+                                                        else "configured_radio_range_unreachable_unicast"),
+                                receiver_candidates=len(links),
+                                airtime_rate_bps=self.cfg.max_data_rate_bps,
                                 mobility_tick=tick, bandwidth_bps=0.0)
                 else:
                     self.metrics.count(header=req["header"], counters=counters)
-            if not links:
+            if not links and not req["broadcast"]:
+                # An unknown unicast target is rejected by NodeSocket.sendto
+                # before admission; retain the guard for malformed internal requests.
                 self.metrics.count(header=req["header"], counters={"packets_dropped": 1})
                 if self._packet_debug:
                     self._event(req, "local_drop", reason="no_receivers")
@@ -517,7 +552,7 @@ class _RadioEngine:
                 req, "transmit", counters,
                 distance_m=(energy_distance if req["broadcast"] else first_distance),
                 energy_distance_m=energy_distance,
-                energy_distance_policy=("farthest_reachable_receiver" if req["broadcast"] else "unicast_peer"),
+                energy_distance_policy=("configured_broadcast_tx_range" if req["broadcast"] else "unicast_peer"),
                 mobility_tick=tick,
                 bandwidth_bps=(None if req["broadcast"] else unicast_link_rate),
                 airtime_rate_bps=airtime_rate,
@@ -598,7 +633,7 @@ class _RadioEngine:
 
     def _deliver(self, req, name):
         try:
-            self._sock.sendto(req["data"], self._address_of[name])
+            self._sock.sendto(req["data"], self._underlay_of[name])
         except OSError as exc:
             self.metrics.count(header=req["header"], counters={"delivery_drops": 1, "socket_errors": 1})
             if self._packet_debug:
@@ -609,7 +644,8 @@ class _RadioEngine:
         else:
             if self._packet_debug:
                 self._event(req, "kernel_send", {"kernel_datagrams_sent": 1},
-                            target=list(self._address_of[name]))
+                            target=list(self._address_of[name]),
+                            actual_target=list(self._underlay_of[name]))
             else:
                 self.metrics.count(header=req["header"], counters={"kernel_datagrams_sent": 1})
         req["outstanding"] -= 1
@@ -771,9 +807,13 @@ class NodeSocket:
         self.spec = node_spec
         self.plan = plan
         self.cfg = plan.link_config
+        self._max_queue_packets = effective(
+            plan.flame_settings, node_spec.role, "radio_packets", plan.config.max_queue_packets)
+        self._max_queue_bytes = effective(
+            plan.flame_settings, node_spec.role, "radio_bytes", plan.config.max_queue_bytes)
         self._address_of = {node.name: node.address for node in plan.nodes}
         self._name_of_address = {address: name for name, address in self._address_of.items()}
-        self._name_of_ip = {node.ip: node.name for node in plan.nodes}
+        self._name_of_ip = {node.underlay_address[0]: node.name for node in plan.nodes}
         self._epoch_mono = time.monotonic() + plan.epoch_start - time.time()
         self._closed = False
         self._fatal = None
@@ -795,7 +835,7 @@ class NodeSocket:
 
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
-            self._sock.bind(node_spec.address)
+            self._sock.bind(node_spec.underlay_address)
             self._sock.setblocking(False)
         except BaseException:
             self._sock.close()
@@ -970,8 +1010,8 @@ class NodeSocket:
         self._node_event(req, "attempt", {"packets_attempted": 1, "bits_attempted": req["bits"]})
         self._drain_radio_status()
         if (
-            len(self._pending) >= self.plan.config.max_queue_packets
-            or self._queued_bytes + len(data) > self.plan.config.max_queue_bytes
+            len(self._pending) >= self._max_queue_packets
+            or self._queued_bytes + len(data) > self._max_queue_bytes
         ):
             self._node_event(req, "local_drop", {"packets_dropped": 1}, reason="queue_full")
             raise BlockingIOError(errno.ENOBUFS, "emulated send queue is full")

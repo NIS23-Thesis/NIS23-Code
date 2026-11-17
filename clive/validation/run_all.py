@@ -30,6 +30,8 @@ CHECKS = [
     "validate_clear_map_stages.js",
     "validate_guided_map.js",
     "validate_event_stream_js.js",
+    "validate_event_origin_js.js",
+    "validate_event_semantics_js.js",
     "validate_connection_tracker_js.js",
 ]
 for name in CHECKS:

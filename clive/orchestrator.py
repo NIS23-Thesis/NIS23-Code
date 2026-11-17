@@ -1,7 +1,7 @@
-"""CLIVE Orchestrator - localhost-only implementation.
+"""CLIVE Orchestrator - localhost-only underlay implementation.
 
 The Orchestrator prepares a reproducible emulation plan containing:
-- localhost node addresses (one loopback IPv4 address per virtual node),
+- overlay protocol endpoints and separate localhost UDP underlay endpoints,
 - a precomputed Gauss-Markov mobility trace,
 - link-emulation parameters, and
 - a shared future experiment epoch.
@@ -73,20 +73,32 @@ def atomic_json(path, value):
 
 @dataclass
 class NodeSpec:
-    """One virtual node in localhost mode.
+    """Protocol-facing overlay identity plus local UDP transport endpoint.
 
-    The thesis' localhost record contains only node_name, node_role, ip and port.
-    There is deliberately no overlay/underlay translation in this implementation.
+    ``ip``/``port`` remain the overlay pair for backwards compatibility with
+    existing scenarios and FLAME.  If no underlay is specified, it defaults to
+    that same loopback endpoint, exactly as in the original localhost mode.
     """
 
     name: str
     role: NodeRole
     ip: str
     port: int = DEFAULT_PORT
+    underlay_ip: Optional[str] = None
+    underlay_port: Optional[int] = None
 
     @property
     def address(self):
         return (self.ip, self.port)
+
+    @property
+    def overlay_address(self):
+        return self.address
+
+    @property
+    def underlay_address(self):
+        return (self.underlay_ip if self.underlay_ip is not None else self.ip,
+                self.underlay_port if self.underlay_port is not None else self.port)
 
     def validate(self):
         if not isinstance(self.name, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", self.name):
@@ -95,18 +107,64 @@ class NodeSpec:
             raise ValueError("reserved node filename")
         if type(self.role) not in (int, NodeRole) or self.role not in (0, 1):
             raise ValueError("invalid node role")
-        address = ipaddress.IPv4Address(self.ip)
-        if str(address) != self.ip or not address.is_loopback:
-            raise ValueError("localhost node IP must be a canonical 127/8 loopback address")
+        try:
+            address = ipaddress.IPv4Address(self.ip)
+        except (ipaddress.AddressValueError, TypeError) as exc:
+            raise ValueError("overlay IP must be a canonical IPv4 unicast address") from exc
+        if str(address) != self.ip or address.is_multicast or address.is_unspecified or address.is_reserved or int(address) == 0xFFFFFFFF:
+            raise ValueError("overlay IP must be a canonical IPv4 unicast address")
         if type(self.port) is not int or not 1 <= self.port <= 65535:
-            raise ValueError("port must be an integer between 1 and 65535")
+            raise ValueError("overlay port must be an integer between 1 and 65535")
+        physical_ip, physical_port = self.underlay_address
+        try:
+            physical_address = ipaddress.IPv4Address(physical_ip)
+        except (ipaddress.AddressValueError, TypeError) as exc:
+            raise ValueError("underlay IP must be a canonical 127/8 loopback address") from exc
+        if str(physical_address) != physical_ip or not physical_address.is_loopback:
+            raise ValueError("underlay IP must be a canonical 127/8 loopback address")
+        if type(physical_port) is not int or not 1 <= physical_port <= 65535:
+            raise ValueError("underlay port must be an integer between 1 and 65535")
 
     def to_dict(self) -> Dict[str, Any]:
-        return {"name": self.name, "role": int(self.role), "ip": self.ip, "port": self.port}
+        return {"name": self.name, "role": int(self.role), "ip": self.ip, "port": self.port,
+                "overlay_ip": self.ip, "overlay_port": self.port,
+                "underlay_ip": self.underlay_address[0],
+                "underlay_port": self.underlay_address[1]}
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "NodeSpec":
-        obj = cls(d["name"], NodeRole(d["role"]), d["ip"], d.get("port", DEFAULT_PORT))
+        if not isinstance(d, dict):
+            raise ValueError("each node must be a JSON object")
+        overlay = d.get("overlay")
+        underlay = d.get("underlay")
+        if overlay is not None and not isinstance(overlay, dict):
+            raise ValueError("overlay must be an object with ip and port")
+        if underlay is not None and not isinstance(underlay, dict):
+            raise ValueError("underlay must be an object with ip and port")
+        overlay = overlay or {}
+        underlay = underlay or {}
+        overlay_ip = overlay.get("ip", d.get("ip", d.get("overlay_ip")))
+        overlay_port = overlay.get("port", d.get("port", d.get("overlay_port", DEFAULT_PORT)))
+        physical_ip = underlay.get("ip", d.get("underlay_ip"))
+        physical_port = underlay.get("port", d.get("underlay_port"))
+        for top_key, value in (("ip", overlay_ip), ("port", overlay_port)):
+            if top_key in d and top_key in overlay and d[top_key] != value:
+                raise ValueError(f"conflicting node overlay {top_key}")
+        for top_key, value in (("overlay_ip", overlay_ip), ("overlay_port", overlay_port)):
+            if top_key in d and d[top_key] != value:
+                raise ValueError(f"conflicting node {top_key}")
+        for top_key, value in (("underlay_ip", physical_ip), ("underlay_port", physical_port)):
+            if top_key in d and top_key.split('_', 1)[1] in underlay and d[top_key] != value:
+                raise ValueError(f"conflicting node {top_key}")
+        role = d["role"]
+        if isinstance(role, str):
+            role_map = {"ch": NodeRole.CLUSTER_HEAD, "cluster_head": NodeRole.CLUSTER_HEAD,
+                        "sn": NodeRole.SENSOR_NODE, "sensor_node": NodeRole.SENSOR_NODE}
+            if role.lower() not in role_map:
+                raise ValueError(f"invalid node role: {role!r}")
+            role = role_map[role.lower()]
+        obj = cls(d["name"], NodeRole(role), overlay_ip, overlay_port,
+                  physical_ip, physical_port)
         obj.validate()
         return obj
 
@@ -120,7 +178,9 @@ class LinkConfig:
     propagation_speed_mps: float = 299792458.0
     base_delay_s: float = 0.0
     e_elec_j_per_bit: float = 50e-9
-    e_amp_j_per_bit_m2: float = 100e-9
+    # Amplifier coefficient in J/(bit*m**n), where n=pathloss_exponent.
+    # 100 pJ = 100e-12 J. This is a thesis modeling assumption, not radio calibration.
+    e_amp_j_per_bit_mn: float = 100e-12
     bucket_capacity_bytes: int = 65507
     ipdv_enabled: bool = True
 
@@ -137,7 +197,7 @@ class LinkConfig:
         for name in (
             "pathloss_exponent", "rssi0_dbm", "d0_m", "max_data_rate_bps",
             "propagation_speed_mps", "base_delay_s", "e_elec_j_per_bit",
-            "e_amp_j_per_bit_m2",
+            "e_amp_j_per_bit_mn",
         ):
             finite(getattr(self, name), name)
         positive_int(self.bucket_capacity_bytes, "bucket_capacity_bytes")
@@ -147,7 +207,7 @@ class LinkConfig:
             raise ValueError("ipdv_enabled must be boolean")
         if self.pathloss_exponent <= 0 or self.d0_m <= 0 or self.max_data_rate_bps <= 0 or self.propagation_speed_mps <= 0:
             raise ValueError("pathloss, d0, maximum rate and propagation speed must be > 0")
-        if self.base_delay_s < 0 or self.e_elec_j_per_bit < 0 or self.e_amp_j_per_bit_m2 < 0:
+        if self.base_delay_s < 0 or self.e_elec_j_per_bit < 0 or self.e_amp_j_per_bit_mn < 0:
             raise ValueError("delay and energy coefficients must be >= 0")
         self.range_mode = str(self.range_mode).lower().replace("-", "_")
         if self.range_mode not in {"rssi", "explicit"}:
@@ -195,7 +255,14 @@ class LinkConfig:
 
     @classmethod
     def from_dict(cls, d):
-        obj = cls(**dict(d))
+        data = dict(d)
+        if "e_amp_j_per_bit_m2" in data:
+            raise ValueError(
+                "Legacy e_amp_j_per_bit_m2 is ambiguous for d**n. "
+                "Replace it with e_amp_j_per_bit_mn explicitly (100 pJ = 1e-10 J). "
+                "Old energy results should remain associated with their original build."
+            )
+        obj = cls(**data)
         obj.validate()
         return obj
 
@@ -529,7 +596,14 @@ class EmulationPlan:
             raise ValueError(f"node_max_range_m contains unknown nodes: {sorted(unknown_range_nodes)}")
         addresses = [n.address for n in self.nodes]
         if len(addresses) != len(set(addresses)):
-            raise ValueError("node addresses must be unique")
+            raise ValueError("overlay node addresses must be unique")
+        underlay_addresses = [n.underlay_address for n in self.nodes]
+        if len(underlay_addresses) != len(set(underlay_addresses)):
+            raise ValueError("underlay node addresses must be unique")
+        # The radio child uses an ephemeral UDP source port. The receiver can
+        # map source -> overlay only if physical source IPs are unambiguous.
+        if len({ip for ip, _ in underlay_addresses}) != len(underlay_addresses):
+            raise ValueError("underlay IP must be unique per node (UDP source ports are ephemeral)")
 
         expected_ticks = int(self.config.duration_s / self.mobility_config.tick_interval) + 1
         expected_names = set(names)
@@ -966,22 +1040,48 @@ def precompute_trace(node_names, roles, cfg, duration_s, seed):
     return trace
 
 
-def build_nodes(num_ch: int, num_sn: int):
+def build_nodes(num_ch: int, num_sn: int, *, addressing=None):
     if type(num_ch) is not int or type(num_sn) is not int or num_ch < 0 or num_sn < 0 or num_ch + num_sn <= 0:
         raise ValueError("num_ch and num_sn must be non-negative and total at least 1")
-    # 127.0.0.1 is reserved for the physical localhost/controller identity. Nodes start at .2.
-    # The 127/8 loopback block provides ample addresses for stress tests such as 200 nodes.
-    if num_ch + num_sn > (2 ** 24 - 2):
-        raise ValueError("too many localhost nodes for 127/8 loopback addressing")
+    addressing = addressing or {}
+    if not isinstance(addressing, dict):
+        raise ValueError("addressing must be an object")
+    unknown = set(addressing) - {"overlay_network", "underlay_network", "overlay_port", "underlay_port"}
+    if unknown:
+        raise ValueError(f"unknown addressing settings: {sorted(unknown)}")
+    try:
+        physical_net = ipaddress.IPv4Network(addressing.get("underlay_network", "127.0.0.0/8"), strict=True)
+    except (ipaddress.AddressValueError, ipaddress.NetmaskValueError, TypeError) as exc:
+        raise ValueError("underlay_network must be a canonical IPv4 subnet") from exc
+    if not physical_net.subnet_of(ipaddress.IPv4Network("127.0.0.0/8")):
+        raise ValueError("underlay_network must be inside 127.0.0.0/8")
+    overlay_spec = addressing.get("overlay_network")
+    try:
+        virtual_net = (ipaddress.IPv4Network(overlay_spec, strict=True)
+                       if overlay_spec is not None else physical_net)
+    except (ipaddress.AddressValueError, ipaddress.NetmaskValueError, TypeError) as exc:
+        raise ValueError("overlay_network must be a canonical IPv4 subnet") from exc
+    overlay_port = addressing.get("overlay_port", DEFAULT_PORT)
+    underlay_port = addressing.get("underlay_port", DEFAULT_PORT)
+    if any(type(p) is not int or not 1 <= p <= 65535 for p in (overlay_port, underlay_port)):
+        raise ValueError("overlay_port and underlay_port must be valid UDP ports")
+    total = num_ch + num_sn
+    # Offset two reserves subnet address and .1 for the controller/gateway.
+    # Reserve network (.0), controller/gateway (.1), and broadcast (last).
+    if total + 3 > min(virtual_net.num_addresses, physical_net.num_addresses):
+        raise ValueError("overlay/underlay network is too small for the requested nodes")
+    if virtual_net.prefixlen > 30 or physical_net.prefixlen > 30:
+        raise ValueError("overlay/underlay subnet must have at least four addresses")
 
     names = (
         [(f"CH-{i + 1}", NodeRole.CLUSTER_HEAD) for i in range(num_ch)]
         + [(f"SN-{i + 1}", NodeRole.SENSOR_NODE) for i in range(num_sn)]
     )
-    base = int(ipaddress.IPv4Address("127.0.0.0"))
     nodes = []
     for index, (name, role) in enumerate(names, start=2):
-        nodes.append(NodeSpec(name, role, str(ipaddress.IPv4Address(base + index)), DEFAULT_PORT))
+        overlay_ip = str(ipaddress.IPv4Address(int(virtual_net.network_address) + index))
+        underlay_ip = str(ipaddress.IPv4Address(int(physical_net.network_address) + index))
+        nodes.append(NodeSpec(name, role, overlay_ip, overlay_port, underlay_ip, underlay_port))
     for node in nodes:
         node.validate()
     return nodes
@@ -993,9 +1093,11 @@ class Orchestrator:
         if "mode" in scenario and str(scenario["mode"]).lower() != "localhost":
             raise ValueError("CLIVE is localhost-only; multi-host scenarios are not supported")
         scenario.pop("mode", None)  # legacy localhost configs may still contain this value
-        removed_keys = {"hosts", "num_hosts", "underlay_ip_by_node", "node_to_host"}.intersection(scenario)
+        removed_keys = {"hosts", "num_hosts", "node_to_host"}.intersection(scenario)
         if removed_keys:
             raise ValueError(f"localhost-only CLIVE does not accept deployment fields: {sorted(removed_keys)}")
+        if "underlay_ip_by_node" in scenario:
+            raise ValueError("use nodes[].underlay or addressing.underlay_network instead of underlay_ip_by_node")
 
         runtime = dict(scenario.get("runtime", {}))
         runtime.setdefault("duration_s", scenario.get("duration", 300.0))
@@ -1012,7 +1114,7 @@ class Orchestrator:
             key in link_data for key in ("max_range_m", "role_max_range_m", "node_max_range_m")
         ):
             link_data["range_mode"] = "explicit"
-        link = LinkConfig(**link_data)
+        link = LinkConfig.from_dict(link_data)
 
         mobility_data = dict(scenario.get("mobility", {}))
         if mobility_data.get("pause_time_range") is not None and "pause_trigger" not in mobility_data:
@@ -1025,8 +1127,19 @@ class Orchestrator:
         for item in (config, link):
             item.validate()
 
-        num_ch, num_sn = scenario.get("num_ch", 2), scenario.get("num_sn", 6)
-        nodes = build_nodes(num_ch, num_sn)
+        if "nodes" in scenario:
+            if "addressing" in scenario:
+                raise ValueError("use either explicit nodes or auto-generated addressing, not both")
+            if not isinstance(scenario["nodes"], list) or not scenario["nodes"]:
+                raise ValueError("nodes must be a nonempty list")
+            nodes = [NodeSpec.from_dict(item) for item in scenario["nodes"]]
+            if "num_ch" in scenario and scenario["num_ch"] != sum(n.role == NodeRole.CLUSTER_HEAD for n in nodes):
+                raise ValueError("num_ch does not match explicit nodes")
+            if "num_sn" in scenario and scenario["num_sn"] != sum(n.role == NodeRole.SENSOR_NODE for n in nodes):
+                raise ValueError("num_sn does not match explicit nodes")
+        else:
+            nodes = build_nodes(scenario.get("num_ch", 2), scenario.get("num_sn", 6),
+                                addressing=scenario.get("addressing"))
         roles = {node.name: node.role for node in nodes}
         trace = precompute_trace(list(roles), roles, mobility, config.duration_s, config.seed)
         plan = EmulationPlan(

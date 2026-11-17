@@ -163,7 +163,7 @@ class MappedTraceReader:
         self.node_count = int(metadata["node_count"])
         if self.node_count != len(self.node_names):
             raise ValueError("mobility trace node count does not match plan nodes")
-        validate_trace_file(self.path, self.metadata, verify_digest=False)
+        validate_trace_file(self.path, self.metadata, verify_digest=True)
         self._file = open(self.path, "rb")
         self._mmap = mmap.mmap(self._file.fileno(), 0, access=mmap.ACCESS_READ)
         self._frame_struct = _frame_struct(self.node_count)

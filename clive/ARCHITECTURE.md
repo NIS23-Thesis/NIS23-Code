@@ -32,6 +32,20 @@ approximately 2N emulation worker processes (N node/protocol + N radio/TX), plus
 At very high load, the host can still miss real-time deadlines because there are more runnable
 processes than CPU cores.
 
+## Overlay-to-underlay separation
+
+`EmulationPlan.nodes` stores both a protocol-facing overlay endpoint and a
+loopback/UDP transport endpoint. The Orchestrator accepts a named node list
+with roles and both address/port pairs, then persists that mapping in `plan.json`.
+The Emulator launches workers from the saved plan. Each NodeBootstrapper
+creates a NodeSocket that binds RX to its **underlay** address. The radio child
+sends to recipients' **underlay** addresses. `NodeSocket.recvfrom()` translates
+physical source IPs back into overlay `(ip, port)` pairs before delivering
+packets to FLAME. This translation does not bypass CLIVE's modeled radio
+conditions, create multi-host capabilities, or alter FLAME protocol semantics.
+Source IPs on the underlay must be unique because the radio uses ephemeral
+source ports. Existing plans with only `ip` and `port` remain readable.
+
 ## Mobility memory architecture
 
 The full mobility trace is no longer embedded in `plan.json` and no worker deserializes a nested

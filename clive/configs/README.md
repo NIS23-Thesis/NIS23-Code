@@ -2,6 +2,72 @@
 
 `all_options.json` is the complete canonical configuration reference. It is valid JSON and can be passed directly to `clive.py`. Model-specific fields may be present even when the selected model does not use them.
 
+## Overlay and underlay endpoints (localhost deployment)
+
+CLIVE maintains **two endpoint identities** per node. The **overlay** is the IPv4/UDP
+endpoint FLAME uses for HELLO, JOIN, SENSOR_DATA, MODEL_UPDATE, ACKs and neighbor
+membership. The **underlay** is the actual Linux UDP socket endpoint. NodeSocket
+translates overlay destinations to their underlay endpoints and converts the
+underlay sender IP back into its overlay identity on reception. The wireless
+model (range/loss/rate/delay) is still applied before UDP sendto. No FLAME
+header or protocol behavior changes.
+
+The default remains backward compatible: overlay = underlay = a distinct
+`127.0.0.x:27062` per node. To enable distinct, automatically generated
+identities for a standard `num_ch` / `num_sn` scenario, add:
+
+```json
+"addressing": {
+  "overlay_network": "10.27.0.0/24",
+  "underlay_network": "127.27.0.0/24",
+  "overlay_port": 27062,
+  "underlay_port": 27072
+}
+```
+
+To supply **the exact node list** called for by the Orchestrator milestone,
+use `nodes` instead of auto-generated `addressing`:
+
+```json
+"nodes": [
+  {"name": "CH-1", "role": "CH",
+   "overlay": {"ip": "10.29.0.2", "port": 28062},
+   "underlay": {"ip": "127.29.0.2", "port": 28072}},
+  {"name": "SN-1", "role": "SN",
+   "overlay": {"ip": "10.29.0.3", "port": 28062},
+   "underlay": {"ip": "127.29.0.3", "port": 28072}}
+]
+```
+
+For flat-file compatibility, the same values can be supplied as `ip`, `port`,
+`underlay_ip` and `underlay_port`. Nodes may use different logical and physical
+UDP ports. Each physical source IP must be unique, even when physical ports
+are different: the TX radio socket intentionally uses an ephemeral source
+port, so the receiver maps by source IP rather than source port. All underlay
+IP addresses must be canonical **127/8 loopback** addresses; this is **not**
+LAN or multi-host deployment support. Overlay addresses may be unicast IPv4
+addresses outside 127/8. Underlay sockets never bind to overlay addresses.
+
+`plan.json` persists both endpoint pairs and is passed unchanged through
+Emulator → NodeBootstrapper → NodeSocket. The visualizer and FLAME events refer
+to overlay identities; packet debug events also provide `actual_source` on
+receive and `actual_target` for kernel sends. In Wireshark, capture **loopback
+(`lo`)** and filter the **underlay UDP destination port** (27072/28072 for
+the examples above), not the overlay port. Playback of a stored run does not
+re-transmit UDP.
+
+Examples:
+- `demos/overlay-underlay-flame-2ch-4sn.json`: automatic addressing and a
+  short **synthetic** protocol-traffic demonstration, not ML accuracy evidence.
+- `demos/overlay-underlay-real-mnist-2ch-2sn.json`: real PyTorch/MNIST with
+  automatically generated overlay and underlay endpoints.
+- `demos/overlay-underlay-explicit-real-mnist-2ch-2sn.json`: explicitly listed
+  nodes/roles/endpoints with real PyTorch/MNIST.
+
+There is **no prescribed post-aggregation retransmission requirement** in the
+user-confirmed thesis scope. This addressing feature does not change any
+post-aggregation behavior, which belongs to FLAME.
+
 ## Demo scenarios
 
 `configs/demos/` contains short scenarios intended for demonstrations and controlled checks:
@@ -119,3 +185,15 @@ cadence are implementation assumptions, not independently prescribed factors.
 
 `clive/` runs localhost only. The thesis describes LAN capability, but that
 has not been implemented and must not be presented as validated.
+
+## Per-role capacity overrides (GUI and CLI)
+
+Use **Experiment setup → Buffers & storage** to edit separate Sensor Node and
+Cluster Head capacities without hand-editing JSON. Overrides are saved under
+`flame.sn_*` and `flame.ch_*` in scenarios; `null` inherits the older default.
+The full list and limitations are in `clive/docs/CAPACITY_CONTROLS.md`.
+
+These settings bound specific FLAME buffers and CLIVE's NodeSocket TX queues,
+not a virtual node's total RAM or CPU. Inbound model-reassembly transfer maps
+remain under FLAME's unchanged implementation and have no independently
+configurable memory limit.

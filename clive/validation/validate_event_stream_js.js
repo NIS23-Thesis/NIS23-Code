@@ -19,20 +19,22 @@ const training = {seq:3, event:"flame_trained", stream:"protocol", node:"CH-1",
 const drop = {seq:1, event:"delivery_drop", stream:"packet", node:"CH-1",
   time_s:1.0, reason:"out of range", details:{}};
 const data = [drop, packet, training]; // ascending by time (API contract)
-assert.equal(events.category(drop), "drop");
-assert.equal(events.category(packet), "receive");
-assert.equal(events.category(training), "protocol");
-assert.equal(events.category({event:"attempt",stream:"packet"}), "internal");
-assert.equal(events.category({event:"transmit",stream:"packet"}), "transmit");
+assert.equal(events.category(drop), "network");
+assert.equal(events.category(packet), "flame-packet");
+assert.equal(events.category(training), "flame-internal");
+assert.equal(events.category({event:"attempt",stream:"packet"}), "network");
+assert.equal(events.category({event:"transmit",stream:"packet"}), "network");
+assert.equal(events.category({event:"transmit",stream:"packet",packet_type:0}), "flame-packet");
+assert.equal(events.category({event:"flame_hello_sent",stream:"protocol"}), "flame-action");
 assert.match(events.packetLabel(packet, packetName), /seq #42/);
 assert.match(events.packetLabel(training, packetName), /trigger seq #42/);
 const all = events.render(data, {filter:"all", packetName, escapeHtml});
-assert.match(all.summary, /3\/3 shown/);
-assert.ok(all.html.indexOf("Local model trained") < all.html.indexOf("SENSOR_DATA · Received"));
+assert.match(all.summary, /3 rows \/ 3 records/);
+assert.ok(all.html.indexOf("Local training executed") < all.html.indexOf("SENSOR_DATA · RX"));
 assert.ok(!all.html.includes("<script>"));
 assert.ok(!all.html.includes("<img src=x>"));
 const found = events.render(data, {filter:"all", search:"42", packetName, escapeHtml});
-assert.match(found.summary, /2\/2 shown/);
+assert.match(found.summary, /2 rows \/ 2 records/);
 const drops = events.render(data, {filter:"drop", packetName, escapeHtml});
-assert.match(drops.summary, /1\/1 shown/);
+assert.match(drops.summary, /1 rows \/ 1 records/);
 console.log("Event Stream JS presentation validation PASS");

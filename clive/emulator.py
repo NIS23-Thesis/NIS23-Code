@@ -13,6 +13,7 @@ from pathlib import Path
 from multiprocessing.connection import wait as wait_connections
 import os
 import tempfile
+import re
 import time
 import traceback
 from collections import defaultdict
@@ -20,6 +21,50 @@ from collections import defaultdict
 from nodebootstrapper import run_node
 from orchestrator import EmulationPlan, atomic_json
 from nodesocket import MetricsCollector
+
+
+def create_run_directory(results_dir):
+    """Allocate run-1, run-2, ... without renaming legacy result folders.
+
+    The counter is durable, and mkdir is exclusive. The advisory lock protects
+    multiple concurrent CLIVE runners on POSIX hosts; mkdir still prevents
+    collisions if the advisory-lock implementation is unavailable.
+    """
+    root = Path(results_dir)
+    root.mkdir(parents=True, exist_ok=True)
+    control = root / "_control"
+    control.mkdir(exist_ok=True)
+    lock_path = control / "run-number.lock"
+    counter_path = control / "run-counter.txt"
+    with lock_path.open("a+b") as lock_file:
+        if os.name == "posix":
+            import fcntl
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            try:
+                previous = max(0, int(counter_path.read_text().strip()))
+            except (ValueError, OSError):
+                previous = 0
+            for folder in root.iterdir():
+                if folder.is_dir():
+                    matched = re.fullmatch(r"run-(\d+)", folder.name)
+                    if matched:
+                        previous = max(previous, int(matched.group(1)))
+            while True:
+                previous += 1
+                directory = root / f"run-{previous}"
+                try:
+                    directory.mkdir()  # Atomic exclusive create, even across processes.
+                    break
+                except FileExistsError:
+                    continue
+            temporary_counter = control / f"run-counter-{os.getpid()}.tmp"
+            temporary_counter.write_text(str(previous) + "\n", encoding="utf-8")
+            os.replace(temporary_counter, counter_path)
+            return str(directory)
+        finally:
+            if os.name == "posix":
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 class Emulator:
@@ -48,6 +93,22 @@ class Emulator:
             for packet_type, values in compact["by_packet_type"].items():
                 for name in fields:
                     by_type[str(packet_type)][name] += values.get(name, 0)
+        # Radio emissions and recipient deliveries are different counting units:
+        # one broadcast emission may produce many recipient successes. Never use
+        # packets_received / packets_sent as PDR in a multi-node experiment.
+        attempts = totals["delivery_attempts"]
+        handoffs = totals["kernel_datagrams_sent"]
+        drops = totals["delivery_drops"]
+        delivery = {
+            "recipient_delivery_attempts": attempts,
+            "recipient_kernel_handoffs": handoffs,
+            "recipient_delivery_drops": drops,
+            "recipient_handoff_ratio": (handoffs / attempts if attempts else None),
+            "recipient_loss_ratio": (drops / attempts if attempts else None),
+            "unresolved_recipient_attempts": max(0, attempts - handoffs - drops),
+            "note": "Recipient-scoped radio/kernel handoff, not end-to-end FLAME acknowledgment "
+                    "or application-level receipt. Broadcast counts once per eligible recipient.",
+        }
         return {
             "schema_version": 5,
             "success": all(row["success"] for row in nodes.values()),  # legacy: process completion only
@@ -56,6 +117,7 @@ class Emulator:
             "totals": totals,
             "by_packet_type": {key: dict(value) for key, value in sorted(by_type.items())},
             "nodes": nodes,
+            "recipient_delivery": delivery,
             "accounting": (
                 "packets_admitted = accepted into software queue; packets_sent/bits_sent = "
                 "actual modeled radio emissions; kernel_datagrams_sent = successful kernel "
@@ -77,15 +139,37 @@ class Emulator:
                 continue
             details[file.stem] = row
         heads = [row for row in details.values() if row.get("role") == "CH"]
+        # A crashed CH may never write its final adapter JSON. Do not silently
+        # aggregate only surviving CHs and suggest the evidence is complete.
+        plan = getattr(self, "plan", None)
+        expected_heads = sorted(spec.name for spec in getattr(plan, "nodes", ())
+                                if int(spec.role) == 1) if plan is not None else None
+        reported_heads = sorted(row.get("node", name) for name, row in details.items()
+                                if row.get("role") == "CH")
+        missing_heads = sorted(set(expected_heads) - set(reported_heads)) if expected_heads is not None else None
+        head_reporting_complete = (len(missing_heads) == 0) if missing_heads is not None else None
         statuses = [row.get("model_transfer_summary", {}) for row in heads]
         count = lambda key: sum(int(s.get(key, 0)) for s in statuses)
         started = count("started_versions")
         completed = count("completed_versions")
         failed = count("failed_versions")
         unfinished = count("unfinished_versions")
-        real_training = bool(heads) and all(
-            row.get("workload", {}).get("real_neural_network_training") is True for row in heads
+        superseded = count("superseded_versions")
+        # Configuration and execution are different claims. A 30 s run with
+        # first sampling at 30 s legitimately executes no training even though
+        # its trainer is MNIST. Use observed training events, not configured flags.
+        trainer_configured = bool(heads) and all(
+            row.get("workload", {}).get("trainer") == "mnist" or
+            row.get("workload", {}).get("real_neural_network_trainer_configured") is True or
+            row.get("workload", {}).get("real_neural_network_training") is True
+            for row in heads
         )
+        trained_heads = sorted(
+            row.get("node", "unknown") for row in heads
+            if int(row.get("counters", {}).get("trained", 0)) > 0
+        )
+        training_count = sum(int(row.get("counters", {}).get("trained", 0)) for row in heads)
+        real_training = trainer_configured and training_count > 0
         evaluated = {
             row["node"]: row["model_evaluation"] for row in heads
             if row.get("model_evaluation", {}).get("status") == "ok"
@@ -96,19 +180,80 @@ class Emulator:
             row["node"]: row["model_evaluation"].get("reason")
             for row in heads if row.get("model_evaluation", {}).get("status") == "error"
         }
+        application = {
+            "unique_sensor_observations_received": sum(
+                int(row.get("application_delivery", {}).get("unique_sensor_observations_received", 0)) for row in heads),
+            "unique_model_updates_received": sum(
+                int(row.get("application_delivery", {}).get("unique_model_updates_received", 0)) for row in heads),
+            "model_updates_buffered_by_flame": sum(
+                int(row.get("application_delivery", {}).get("model_updates_buffered_by_flame",
+                    row.get("application_delivery", {}).get("unique_model_updates_received", 0))) for row in heads),
+            "model_acceptance_stage": "FLAME aggregation buffer admission, not model compatibility or successful aggregation",
+            "unique_sensor_payload_bytes_received": sum(
+                int(row.get("application_delivery", {}).get("unique_sensor_payload_bytes_received", 0)) for row in heads),
+            "unique_model_payload_bytes_received": sum(
+                int(row.get("application_delivery", {}).get("unique_model_payload_bytes_received", 0)) for row in heads),
+        }
+        application["unique_useful_payload_bytes_received"] = (
+            application["unique_sensor_payload_bytes_received"] + application["unique_model_payload_bytes_received"]
+        )
+        sensors = [row for row in details.values() if row.get("role") == "SN"]
         return {
             "available": bool(heads), "trainer": (heads[0].get("workload", {}).get("trainer") if heads else None),
+            "real_neural_network_trainer_configured": trainer_configured,
+            "real_neural_network_training_executed": real_training,
+            "training_executed": training_count > 0,
+            "cluster_heads_with_local_training": trained_heads,
+            "cluster_heads_without_local_training": sorted(
+                row.get("node", "unknown") for row in heads
+                if int(row.get("counters", {}).get("trained", 0)) == 0
+            ),
+            # Backward-compatible field now means actual observed training.
             "real_neural_network_training": real_training,
             "final_mnist_accuracy_mean": (sum(accuracy_values) / len(accuracy_values)) if accuracy_values else None,
             "final_mnist_accuracy_by_ch": {node: v["accuracy"] for node, v in evaluated.items()},
             "final_mnist_accuracy_status": ("measured" if accuracy_values else "not_measured"),
             "model_evaluation_errors": eval_errors,
-            "local_training_events": sum(int(row.get("counters", {}).get("trained", 0)) for row in heads),
+            "expected_cluster_heads": expected_heads,
+            "reported_cluster_heads": reported_heads,
+            "missing_cluster_head_results": missing_heads,
+            "cluster_head_reporting_complete": head_reporting_complete,
+            "flame_processing_errors_by_ch": {
+                row.get("node", f"CH-{index}"): int(row.get("counters", {}).get("fl_error", 0))
+                for index, row in enumerate(heads, start=1)
+                if int(row.get("counters", {}).get("fl_error", 0)) > 0
+            },
+            "local_training_events": training_count,
             "model_updates_aggregated": sum(int(row.get("counters", {}).get("aggregated", 0)) for row in heads),
             "model_transfers_started": started, "model_transfers_completed": completed,
             "model_transfers_failed": failed, "model_transfers_unfinished": unfinished,
-            "model_delivery_success": (failed == 0 and unfinished == 0 and completed == started) if started else None,
-            "note": "Model transfer status is sender-confirmed ACK completion, not model accuracy or convergence.",
+            "model_transfers_superseded": superseded,
+            "model_transfers_censored_at_cutoff": unfinished,
+            "model_transfer_status_counts_reconcile": (started == completed + failed + unfinished + superseded),
+            "model_transfer_resolution": {
+                "attempted_versions": started,
+                "resolved_versions": completed + failed,
+                "confirmed_completion_fraction_of_resolved": (
+                    completed / (completed + failed) if completed + failed else None
+                ),
+                "unfinished_versions_excluded_from_resolved_rate": unfinished,
+                "superseded_versions_excluded_from_resolved_rate": superseded,
+            },
+            "application_delivery": application,
+            "sensor_observation_accounting": {
+                "generated": sum(int(row.get("samples_generated", 0)) for row in sensors),
+                "offline_buffer_dropped": sum(int(row.get("offline_buffer_drops", 0)) for row in sensors),
+                "sensing_buffer_dropped": sum(int(row.get("sensing_buffer_drops", 0)) for row in sensors),
+                "accepted_unique_at_cluster_heads": application["unique_sensor_observations_received"],
+                "retained_at_cluster_heads": sum(int(row.get("observations_retained", 0)) for row in heads),
+                "evicted_at_least": sum(int(row.get("observations_evicted_at_least", 0)) for row in heads),
+            },
+            "model_delivery_success": (
+                None if head_reporting_complete is False else
+                ((failed == 0 and unfinished == 0 and completed == started) if started else None)
+            ),
+            "model_delivery_success_stage": "sender ACK completion only; not receiver model validity or aggregate quality",
+            "note": "Model transfer status is sender-confirmed ACK completion, not receiver model validation, accuracy, or convergence. Missing CH result files make the integration outcome incomplete.",
         }
 
     def run(self):
@@ -123,7 +268,7 @@ class Emulator:
             from mnist_cache import prepare_mnist_cache
             prepare_mnist_cache(Path(__file__).resolve().parent.parent / "mnist" / "mnist.npz")
         os.makedirs(self.results_dir, exist_ok=True)
-        self.run_dir = tempfile.mkdtemp(prefix="run-", dir=self.results_dir)
+        self.run_dir = create_run_directory(self.results_dir)
         local_plan_path = os.path.join(self.run_dir, "plan.json")
         self.plan.save(local_plan_path)
         if self.plan.logging_config.mobility_tsv:
@@ -278,6 +423,34 @@ class Emulator:
             summary = self._aggregate_metrics(metrics_by_node)
             outcome = self._flame_outcome() if self.protocol_class_path == "flame_protocol:FlameProtocol" else None
             summary["flame_outcome"] = outcome
+            duration = self.plan.config.duration_s
+            useful_bytes = (outcome or {}).get("application_delivery", {}).get("unique_useful_payload_bytes_received")
+            summary["measurement_window"] = {
+                "duration_s": duration,
+                "emitted_wire_throughput_bps": summary["totals"]["bits_sent"] / duration,
+                "unique_application_delivery_bps": (
+                    8 * useful_bytes / duration if useful_bytes is not None else None
+                ),
+                "definition": "Entire simulation duration, aggregated across all nodes. NOT a local-training "
+                              "round or the thesis's asynchronous per-round throughput/goodput.",
+                "caveat": "Broadcast emission and recipient reception have different fanout units; "
+                          "do not subtract these rates to estimate overhead.",
+            }
+            link = self.plan.link_config
+            summary["energy_model"] = {
+                "basis": "analytical estimate, not measured device energy",
+                "formula": "E_tx = bits*(E_elec + E_amp*distance_m**n); E_rx = bits*E_elec",
+                "pathloss_exponent": link.pathloss_exponent,
+                "amplifier_coefficient_j_per_bit_mn": link.e_amp_j_per_bit_mn,
+                "amplifier_coefficient_pj_per_bit_mn": link.e_amp_j_per_bit_mn / 1e-12,
+                "amplifier_units": "J/(bit*m**n), n=pathloss_exponent",
+                "amplifier_units_consistent_with_exponent": True,
+                "coefficient_is_calibrated": False,
+                "warning": "Dimensionally consistent generalized d**n model, using a nominal "
+                           "100 pJ/(bit*m**n) coefficient; NOT calibrated physical radio energy. "
+                           "A published 100 pJ/(bit*m**2) coefficient for n=2 does not "
+                           "independently validate the same numerical value for n=3.",
+            }
             summary["protocol_success"] = (outcome or {}).get("model_delivery_success")
             summary["status_explanation"] = (
                 "success/execution_success: worker processes exited without error. "

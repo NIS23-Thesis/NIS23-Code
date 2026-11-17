@@ -12,7 +12,7 @@ const CliveMapActivity = (() => {
     flame_joined:              {stage: "accepted", label: "JOIN accepted", color: "#70e1a9", priority: 7},
     flame_sensor_received:     {stage: "confirmed", label: "Sensor data accepted", color: "#70e1a9", priority: 4},
     flame_model_sent:          {stage: "model", label: "Model transfer started", color: "#b5a2ff", priority: 3},
-    flame_model_received:      {stage: "model", label: "Model received", color: "#b5a2ff", priority: 4},
+    flame_model_received:      {stage: "model", label: "Model buffered", color: "#b5a2ff", priority: 4},
     flame_transfer_complete:   {stage: "model", label: "Transfer completed", color: "#b5a2ff", priority: 4},
     flame_transfer_failed:     {stage: "exit", label: "Transfer failed", color: "#ff8997", priority: 8},
     flame_trained:             {stage: "learning", label: "Local model trained", color: "#b5a2ff", priority: 3},

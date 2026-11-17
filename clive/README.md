@@ -74,6 +74,15 @@ scripts/run_scenario.sh heterogeneous_ranges --protocol example_protocol:Indepen
 
 `IndependentProbeProtocol` is validation/demo traffic only; it is not FLAME.
 
+## Overlay and underlay support
+
+CLIVE now separates FLAME's **overlay** node address from the real localhost
+UDP **underlay** address. Configure either `addressing` for generated nodes or
+`nodes` for a named per-node list. Existing scenarios retain their original
+`127/8` transport/overlay identity unless explicitly changed. See
+[`configs/README.md`](configs/README.md#overlay-and-underlay-endpoints-localhost-deployment)
+for example JSON, Wireshark capture settings, and the localhost-only boundary.
+
 ## Run any JSON directly
 
 ```bash
@@ -174,3 +183,26 @@ NodeSocket log counts, not packet-delivery probability or application acceptance
 The chart reads append-only packet logs incrementally, rather than discarding
 older counts after the bounded Event Stream cache fills. Link animation queries
 are independent of the Events tab filter.
+
+## Thesis evaluation campaign (November 2026)
+
+For the formal 108-case matrix, repeat-seed runner, NodeSocket UDP calibration,
+controlled 300-second lossy scenarios and evidence/report formats, see
+[`docs/EVALUATION_CAMPAIGN_20261115.md`](docs/EVALUATION_CAMPAIGN_20261115.md).
+The tools distinguish configuration validation, short diagnostic runs, complete
+emulator executions and FLAME model-transfer outcomes. Native localhost
+`ping`/`iperf3` bypasses NodeSocket, so the bundled UDP calibration is explicitly
+labeled as an application-level ping-/iperf-style probe rather than external
+`iperf3` execution.
+
+### Visualizer light mode
+
+The shared CLIVE header includes a **Light mode / Dark mode** switch on Setup,
+Topology, Learning, and Events. Dark mode is the default for existing users.
+The selected mode is stored in the browser and restored on reload; links between
+standalone Studio and Visualizer ports carry the selection. The topology canvas,
+traffic chart, and learning chart redraw immediately when switching themes.
+Theme resources are `control_ui/theme.{css,js}` and
+`visualizer/static/theme.{css,js}`. The shared header generator
+`clive/scripts/sync_ui_shell.py` retains the switch when regenerating markup.
+These changes are presentation-only and do not modify FLAME or run results.

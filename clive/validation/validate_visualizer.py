@@ -77,7 +77,9 @@ def main():
         assert timeline["rows"] and timeline["rows"][0]["sent"] == 1
         assert timeline["has_packet_traffic"] is True
         assert timeline["totals"]["sent"] == 1
-        assert timeline["rows"][-1]["time_s"] == plan.config.duration_s
+        # A 1.0 s run contains [0.0, 0.5) and [0.5, 1.0).
+        # The empty [1.0, 1.5) interval is not part of the experiment.
+        assert [row["time_s"] for row in timeline["rows"]] == [0.0, 0.5]
         print("CLIVE visualizer validation PASS")
 
 

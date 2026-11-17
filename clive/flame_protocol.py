@@ -8,8 +8,10 @@ all FLAME control, data, fragment and ACK datagrams.
 from __future__ import annotations
 
 from collections import Counter, deque
+import errno
 import hashlib
 import json
+import math
 from pathlib import Path
 import random
 import sys
@@ -23,6 +25,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from protocol_interface import ProtocolInterface
+from capacity_settings import OVERRIDES, check_overrides, effective
 from nodesocket import BROADCAST_ADDRESS
 from flame.communication.communication_module import CommunicationModule
 from flame.communication.message import PacketType
@@ -64,6 +67,8 @@ DEFAULTS = {
     "send_buffer_capacity": 128,
     "receive_buffer_capacity": 128,
     "dataset_capacity": 512,
+    # Optional role-specific overrides; null inherits the legacy setting.
+    **{key: None for key in OVERRIDES},
     "model_retry_limit": 2,          # adapter-level reattempts after a failed FLAME transfer
     "model_retry_backoff_s": 2.0,    # avoids immediate repeated failure after churn
     "repeat_sensor_samples": False, # never silently repeat 128 MNIST observations
@@ -79,16 +84,46 @@ DEFAULTS = {
 def _configuration(plan):
     settings = dict(DEFAULTS)
     settings.update(plan.flame_settings)
-    unknown = set(settings) - set(DEFAULTS)
+    check_overrides(settings)
+    unknown = set(plan.flame_settings) - set(DEFAULTS)
     if unknown:
         raise ValueError(f"Unknown flame configuration keys: {sorted(unknown)}")
-    for name in ("hello_interval_s", "sample_interval_s", "service_interval_s", "join_retry_s"):
-        if not isinstance(settings[name], (float, int)) or settings[name] <= 0:
-            raise ValueError(f"flame.{name} must be positive")
+    for name in ("hello_interval_s", "sample_interval_s", "service_interval_s", "join_retry_s",
+                 "neighbor_timeout_s", "ack_timeout", "ack_delay", "reassembly_timeout",
+                 "completed_retention", "model_retry_backoff_s", "learning_rate"):
+        value = settings[name]
+        if isinstance(value, bool) or not isinstance(value, (float, int)) or not math.isfinite(value) or value <= 0:
+            raise ValueError(f"flame.{name} must be finite and positive")
+    for name in ("expected_observations", "aggregation_threshold", "dataset_capacity",
+                 "mnist_samples_per_sensor", "max_offline_samples", "send_buffer_capacity",
+                 "receive_buffer_capacity", "initial_window_size", "max_window_size",
+                 "max_retries", "local_epochs", "batch_size"):
+        minimum = 0 if name == "max_retries" else 1
+        if type(settings[name]) is not int or settings[name] < minimum:
+            raise ValueError(f"flame.{name} must be an integer >= {minimum}")
+    for name in ("training_threshold", "aggregation_learning_rate"):
+        value = settings[name]
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or not 0 < value <= 1:
+            raise ValueError(f"flame.{name} must be finite and in (0,1]")
+    if settings["initial_window_size"] > settings["max_window_size"]:
+        raise ValueError("flame.initial_window_size cannot exceed max_window_size")
     if settings["trainer"] not in ("mnist", "mean_pixel"):
         raise ValueError("flame.trainer must be mnist or mean_pixel")
     if settings["sample_source"] not in ("mnist", "synthetic"):
         raise ValueError("flame.sample_source must be mnist or synthetic")
+    if settings["trainer"] == "mnist":
+        minimum_batch = math.ceil(settings["expected_observations"] * settings["training_threshold"])
+        if settings["dataset_capacity"] < minimum_batch:
+            raise ValueError(
+                f"flame.dataset_capacity={settings['dataset_capacity']} cannot hold the "
+                f"minimum required MNIST training batch ({minimum_batch} observations)"
+            )
+    active_dataset = effective(settings, 1, "dataset", settings["dataset_capacity"])
+    if settings["trainer"] == "mnist":
+        minimum_batch = math.ceil(settings["expected_observations"] * settings["training_threshold"])
+        if active_dataset < minimum_batch:
+            raise ValueError(f"flame.ch_dataset_capacity={active_dataset} cannot hold the "
+                             f"minimum required MNIST training batch ({minimum_batch})")
     if settings["max_offline_samples"] < 1:
         raise ValueError("max_offline_samples must be positive")
     if type(settings["model_retry_limit"]) is not int or settings["model_retry_limit"] < 0:
@@ -164,6 +199,46 @@ class _MNISTSource:
         return sample
 
 
+class _NodeSocketLossBoundary:
+    """Adapt a modeled local NodeSocket queue drop to ordinary UDP loss.
+
+    NodeSocket has *already* recorded the attempted packet and its queue_full
+    local_drop before raising ENOBUFS. Propagating that expected loss through
+    FLAME's synchronous send call kills the CLIVE worker; returning the byte
+    count lets FLAME's existing application-level retry/timeout logic operate.
+
+    Only this one modeled-capacity condition is caught. Closed sockets, dead
+    radio workers, unexpected OSErrors and FLAME protocol exceptions propagate.
+    """
+
+    def __init__(self, node_socket, adapter):
+        self._node_socket = node_socket
+        self._adapter = adapter
+
+    def sendto(self, data, destination):
+        try:
+            return self._node_socket.sendto(data, destination)
+        except BlockingIOError as error:
+            if error.errno != errno.ENOBUFS:
+                raise
+            adapter = self._adapter
+            adapter.stats["radio_send_queue_dropped"] += 1
+            count = adapter.stats["radio_send_queue_dropped"]
+            # Exact per-packet drop evidence already lives in NodeSocket's log.
+            # Bound the extra protocol event volume for dense/high-loss runs.
+            if count <= 4 or (count & (count - 1)) == 0:
+                adapter._record("radio_backpressure_drop", destination=destination,
+                                bytes=len(data), total_drops=count,
+                                reason="emulated_send_queue_full")
+            return len(data)
+
+    def recvfrom(self, *args, **kwargs):
+        return self._node_socket.recvfrom(*args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._node_socket, name)
+
+
 class FlameProtocol(ProtocolInterface):
     """Actual FLAME communication, neighbor, sensing, and FL modules in CLIVE."""
 
@@ -172,11 +247,38 @@ class FlameProtocol(ProtocolInterface):
         self.s = _configuration(node.plan)
         self.role = int(node.spec.role)
         self.is_ch = self.role == 1
+        self.capacity_settings = {
+            kind: effective(self.s, self.role, kind, fallback)
+            for kind, fallback in (
+                ("send", self.s["send_buffer_capacity"]),
+                ("datagram", self.s["receive_buffer_capacity"]),
+                ("radio_packets", node.plan.config.max_queue_packets),
+                ("radio_bytes", node.plan.config.max_queue_bytes),
+                ("sample", 100),
+                ("offline", self.s["max_offline_samples"]),
+                ("dataset", self.s["dataset_capacity"]),
+            ) if (kind not in ("sample", "offline") or not self.is_ch)
+              and (kind != "dataset" or self.is_ch)
+        }
         self.model_id = int(self.s["model_id"])
         self.closed = False
         self.learning_history = None
         self._learning_events = 0
         self.stats = Counter()
+        # CLIVE-only accounting. Does not change FLAME duplicate handling or training.
+        self._unique_observation_keys = set()
+        # CH-side observation provenance: lifetime counts of newly accepted
+        # SENSOR_DATA labels, independent of FIFO dataset eviction/training.
+        # Deliberately stored by CLIVE, without changing FLAME's storage rules.
+        self._received_digit_counts = [0] * 10
+        self._received_digit_unclassified = 0
+        # Cumulative receipt watermark used to show which labels had reached
+        # this CH by each local-training revision (not predictions or accuracy).
+        self._last_training_digit_counts = [0] * 10
+        self._last_training_used_observation_keys = set()
+        self._unique_model_keys = set()
+        self._useful_sensor_bytes = 0
+        self._useful_model_bytes = 0
         self._next_service = 0.0
         self._next_hello = 0.0 if self.is_ch else None
         self._next_sample = self.s["sample_interval_s"] if not self.is_ch else None
@@ -192,8 +294,9 @@ class FlameProtocol(ProtocolInterface):
         self._sent_updates = set()  # (peer address, local update_id): attempted or completed
         self._model_retry_counts = Counter()
         self._model_retry_after = {}
-        self._model_transfer_status = {}  # (peer, update_id): pending / complete / failed / retry_exhausted
-        self._offline_samples = deque(maxlen=self.s["max_offline_samples"])
+        self._model_transfer_status = {}  # (peer, update_id): pending / retry_wait / complete / retry_exhausted / superseded
+        self._max_protocol_callback_wall_s = 0.0
+        self._offline_samples = deque(maxlen=self.capacity_settings["offline"] if not self.is_ch else 1)
         self.sensing = None
         self.acquisition = None
         self.neighbors = NeighborModule(model_id=self.model_id)
@@ -213,12 +316,13 @@ class FlameProtocol(ProtocolInterface):
         # IMPORTANT: no real UDP socket and no FLAME communication thread.
         # All data, including ACK and broadcast, passes through NodeSocket.
         self.comms = CommunicationModule(
-            socket_interface=node.socket, role=self.role, auto_start=False,
+            socket_interface=_NodeSocketLossBoundary(node.socket, self),
+            role=self.role, auto_start=False,
             poll_socket=False, neighbor_module=self.neighbors,
             route_handler=self._on_message,
             event_handler=self._on_comm_event,
-            buffer_size=int(self.s["receive_buffer_capacity"]),
-            send_buffer_capacity=int(self.s["send_buffer_capacity"]),
+            buffer_size=int(self.capacity_settings["datagram"]),
+            send_buffer_capacity=int(self.capacity_settings["send"]),
             initial_window_size=int(self.s["initial_window_size"]),
             max_window_size=int(self.s["max_window_size"]),
             ack_timeout=float(self.s["ack_timeout"]),
@@ -244,7 +348,7 @@ class FlameProtocol(ProtocolInterface):
             else:
                 training_fn = _mean_pixel_train
                 model_state = {"mean_pixel": 0.0}
-            dataset_manager = DatasetManager(DatasetStorage(capacity=int(self.s["dataset_capacity"])))
+            dataset_manager = DatasetManager(DatasetStorage(capacity=int(self.capacity_settings["dataset"])))
             model_manager = ModelManager(self.model_id, model_state=model_state)
             trainer = Trainer(
                 dataset_manager,
@@ -285,7 +389,8 @@ class FlameProtocol(ProtocolInterface):
         "ch_discovered", "join_sent", "joined", "leave_sent",
         "connection_lost", "member_expired", "join_pending_expired",
         "leave_observed", "sensor_received", "model_sent", "model_received",
-        "model_retry_scheduled", "model_retry_exhausted",
+        "model_retry_scheduled", "model_retry_exhausted", "model_retry_superseded",
+        "radio_backpressure_drop",
     })
 
     def _record(self, name: str, **details):
@@ -332,21 +437,80 @@ class FlameProtocol(ProtocolInterface):
             return
         if key not in self._model_transfer_status:
             return
+        # Duplicate or late failures must never demote terminal outcomes.
+        if self._model_transfer_status[key] in ("complete", "superseded", "retry_exhausted"):
+            return
+
+        # If CLIVE has invalidated this update after peer aggregation, or
+        # replaced it with a newer trained update, a resend is impossible.
+        # The ``hasattr`` guard preserves compatibility with minimal legacy
+        # observer fixtures that do not initialize the cache at all.
+        cached = getattr(self, "_cached_update", None)
+        if hasattr(self, "_cached_update") and (
+            cached is None or int(cached.get("update_id", -1)) != int(update_id)
+        ):
+            self._model_transfer_status[key] = "superseded"
+            self._model_retry_after.pop(key, None)
+            self._sent_updates.discard(key)
+            self._record("model_retry_superseded", destination=peer,
+                         update_id=update_id,
+                         reason="model_cache_invalidated" if cached is None else "newer_model_cached")
+            return
 
         previous_retries = self._model_retry_counts[key]
-        self._model_transfer_status[key] = "failed"
         if previous_retries >= self.s["model_retry_limit"]:
             self._model_transfer_status[key] = "retry_exhausted"
             self._record("model_retry_exhausted", destination=peer,
                          update_id=update_id, reason=event.get("reason"))
             return
 
+        # FLAME failed one transport attempt, but CLIVE intends to reattempt
+        # this model. It is *not* yet a terminal failed model version.
+        self._model_transfer_status[key] = "retry_wait"
         self._model_retry_counts[key] += 1
         delay = self.s["model_retry_backoff_s"] * (2 ** previous_retries)
         self._model_retry_after[key] = self.node.elapsed() + delay
         self._sent_updates.discard(key)
         self._record("model_retry_scheduled", destination=peer, update_id=update_id,
                      attempt=previous_retries + 1, reason=event.get("reason"))
+
+    def _abandon_stale_model_retries(self, *, reason="model_changed_after_aggregation"):
+        """Reconcile retry promises after aggregation discards the cached model.
+
+        Already-running transfers remain pending and may still complete; only
+        entries waiting for a CLIVE-initiated retry are superseded here.
+        """
+        for key in tuple(self._model_retry_after):
+            if self._model_transfer_status.get(key) not in ("retry_wait", "failed"):
+                continue
+            self._model_retry_after.pop(key, None)
+            self._sent_updates.discard(key)
+            self._model_transfer_status[key] = "superseded"
+            peer, update_id = key
+            self._record("model_retry_superseded", destination=peer,
+                         update_id=update_id, reason=reason)
+
+    def _revision_limit_reached(self, error: OverflowError, *, trigger=None, source=None):
+        """Report FLAME's 8-bit revision ceiling without altering the protocol.
+
+        A CH can keep receiving observations at revision 255, but cannot start
+        another local-training/aggregation revision. Emit a single explicit
+        CLIVE diagnostic instead of raising an uncaught OverflowError or
+        silently claiming another model was produced.
+        """
+        if getattr(self, "_revision_limit_reported", False):
+            return
+        self._revision_limit_reported = True
+        manager = getattr(getattr(self, "fl", None), "model_manager", None)
+        current = manager.get_update_id() if manager is not None else None
+        before = self.stats["model_revision_limit_reached"]
+        self._record("model_revision_limit_reached", update_id=current,
+                     max_update_id=255, trigger=trigger, source=source,
+                     reason=str(error))
+        # Preserve compatibility with minimal observer test doubles whose
+        # _record hook only appends events rather than updating counters.
+        if self.stats["model_revision_limit_reached"] == before:
+            self.stats["model_revision_limit_reached"] += 1
 
     def start(self):
         self._next_service = self.node.elapsed() + self.s["service_interval_s"]
@@ -367,10 +531,14 @@ class FlameProtocol(ProtocolInterface):
         return min(times)
 
     def _send_hello(self):
+        queue_drops = getattr(self, "stats", {}).get("radio_send_queue_dropped", 0)
         self.comms.send_message({
             "packet_type": PacketType.HELLO, "role": 1, "model_id": self.model_id,
-        }, destination=BROADCAST_ADDRESS)
-        self._record("hello_sent")
+        }, destination=(BROADCAST_ADDRESS[0], self.node.spec.port))
+        if getattr(self, "stats", {}).get("radio_send_queue_dropped", 0) == queue_drops:
+            self._record("hello_sent")
+        else:
+            self._record("hello_queue_dropped", reason="emulated_send_queue_full")
 
     def on_timer(self, now_s):
         """One CLIVE tick: announce, sample, depart, then service protocol queues."""
@@ -410,10 +578,15 @@ class FlameProtocol(ProtocolInterface):
         if self._next_leave is None or now_s < self._next_leave:
             return
         if self._is_joined():
+            queue_drops = getattr(self, "stats", {}).get("radio_send_queue_dropped", 0)
             self.comms.send_message({
-                "packet_type": PacketType.LEAVE, "role": 0, "leave_reason": 0,
+                "packet_type": PacketType.LEAVE, "role": 0, "reason": 0,
             }, destination=self._joined_ch)
-            self._record("leave_sent", destination=self._joined_ch)
+            if getattr(self, "stats", {}).get("radio_send_queue_dropped", 0) == queue_drops:
+                self._record("leave_sent", destination=self._joined_ch)
+            else:
+                self._record("leave_queue_dropped", destination=self._joined_ch,
+                             reason="emulated_send_queue_full")
         self._left = True
         self._next_leave = None
         self._next_sample = None
@@ -463,7 +636,20 @@ class FlameProtocol(ProtocolInterface):
 
     def on_datagram(self, data: bytes, source: tuple[str, int]):
         self.comms.receive_datagram(data, source)
-        self.comms._drain_once()
+        started = time.monotonic()
+        try:
+            self.comms._drain_once()
+        finally:
+            # Synchronous FLAME/PyTorch callbacks can delay incoming UDP ACKs.
+            # Observe the slowdown without moving protocol state to an unsafe
+            # background thread or changing the team's FLAME implementation.
+            callback_s = time.monotonic() - started
+            self._max_protocol_callback_wall_s = max(
+                getattr(self, "_max_protocol_callback_wall_s", 0.0), callback_s)
+            if callback_s >= float(self.s["ack_timeout"]):
+                self._record("protocol_callback_slow", duration_s=round(callback_s, 6),
+                             ack_timeout_s=self.s["ack_timeout"],
+                             reason="synchronous_protocol_or_training_work")
 
     def _is_joined(self):
         if self._joined_ch is None:
@@ -490,13 +676,18 @@ class FlameProtocol(ProtocolInterface):
         dest = (ch.ip_address, ch.port)
         self._join_nonce = (self._join_nonce + 1) & 0xFFFF
         self.neighbors.start_join(ch.ip_address, ch.port, self._join_nonce, model_id=self.model_id)
+        queue_drops = getattr(self, "stats", {}).get("radio_send_queue_dropped", 0)
         self.comms.send_message({
             "packet_type": PacketType.JOIN, "role": 0,
             "join_id": self._join_nonce, "model_id": self.model_id,
         }, destination=dest)
         self._join_target = dest
         self._next_join = now_s + self.s["join_retry_s"]
-        self._record("join_sent", destination=dest)
+        if getattr(self, "stats", {}).get("radio_send_queue_dropped", 0) == queue_drops:
+            self._record("join_sent", destination=dest)
+        else:
+            self._record("join_queue_dropped", destination=dest,
+                         reason="emulated_send_queue_full")
 
     def _queue_payload(self, payload):
         if self._left or not self._is_joined():
@@ -568,27 +759,112 @@ class FlameProtocol(ProtocolInterface):
                 self._joined_ch = source
         if not was_joined and self._is_joined():
             self._joined_ch = source
-            self.sensing = SensingModule(self.acquisition, self.comms, source)
+            self.sensing = SensingModule(
+                self.acquisition, self.comms, source,
+                sample_buffer_capacity=int(self.capacity_settings["sample"]))
             self._record("joined", destination=source,
                          packet_type=int(packet["packet_type"]),
                          sequence_number=packet.get("sequence_number"))
             self._flush_offline_samples()
 
-    def _record_learning(self, cause):
-        """Record accuracy from the current FLAME state, without mutating it."""
-        if self.learning_history is None:
-            return
-        self._learning_events += 1
-        if self._learning_events % self.s["learning_eval_every_updates"]:
+    def _record_learning(self, cause, *, peer=None, peer_update_id=None):
+        """Persist exact revision provenance even without held-out evaluation.
+
+        A training revision captures accepted digit counts at the time it
+        completed; peer aggregation records the triggering MODEL_UPDATE. Never
+        infer training data from class predictions or attribute incoming peer
+        model updates to new local sensor observations.
+        """
+        self._learning_events = getattr(self, "_learning_events", 0) + 1
+        if not getattr(self.node, "results_dir", None):
             return
         try:
-            revision = self.fl.model_manager.get_update_id()
-            self.learning_history.record(
-                self.fl.model_manager.get_model_state(),
-                node=self.node.spec.name, time_s=self.node.elapsed(),
-                revision=revision, cause=cause,
-                observations=self.fl.dataset_manager.get_observation_count())
+            manager = self.fl.model_manager
+            get_revision = getattr(manager, "get_revision", None)
+            revision = get_revision() if get_revision else manager.get_update_id()
+            now = self.node.elapsed()
+            context = {}
+            if cause == "local_training":
+                counts = list(self._received_digit_counts)
+                previous = list(getattr(self, "_last_training_digit_counts", [0] * 10))
+                context = {
+                    "digit_counts_before_training": counts,
+                    "digit_counts_since_previous_training": [max(0, n - old) for n, old in zip(counts, previous)],
+                    "sensor_observations_received_before_training": sum(counts) + self._received_digit_unclassified,
+                    "digit_count_scope": "Cumulative unique accepted SENSOR_DATA labels received by this CH at training completion, including the triggering observation; counts may exceed the retained training dataset.",
+                }
+                self._last_training_digit_counts = counts
+                # This separate count is the EXACT fresh batch used by the
+                # Trainer, not all observations ever received by this CH.
+                # It is obtained from Trainer's consumed-observation keys and
+                # the still-retained entries on successful training.
+                used = getattr(self.fl.trainer, "_used_observations", None)
+                if used is not None:
+                    newly_used = set(used) - getattr(self, "_last_training_used_observation_keys", set())
+                    training_counts = [0] * 10
+                    matched = 0
+                    for entry in self.fl.dataset_manager.get_observations():
+                        key = (entry.source_address, entry.data_id, entry.sequence_number)
+                        if key not in newly_used:
+                            continue
+                        payload = entry.payload
+                        if isinstance(payload, bytes) and len(payload) == 785 and payload[-1] < 10:
+                            training_counts[payload[-1]] += 1
+                        matched += 1
+                    if matched == len(newly_used):
+                        context["digit_counts_in_training"] = training_counts
+                        context["training_input_observations"] = matched
+                    self._last_training_used_observation_keys = set(used)
+            elif cause == "peer_aggregation":
+                source = list(peer) if isinstance(peer, (tuple, list)) else peer
+                peer_name = None
+                for spec in getattr(getattr(self.node, "plan", None), "nodes", ()):
+                    if (getattr(spec, "ip", None), getattr(spec, "port", None)) == peer:
+                        peer_name = getattr(spec, "name", None)
+                        break
+                context = {
+                    "received_model_update": True,
+                    "trigger_peer": peer_name,
+                    "trigger_peer_overlay": source,
+                    "trigger_update_id": peer_update_id,
+                    "peer_provenance_note": "The triggering peer update caused aggregation; other buffered peer updates may also have contributed.",
+                }
+            fields = {
+                "node": str(self.node.spec.name), "time_s": float(now),
+                "revision": int(revision), "wire_update_id": int(manager.get_update_id()),
+                "cause": cause, "observations_retained": self.fl.dataset_manager.get_observation_count(),
+                **context,
+            }
+            if (self.learning_history is not None
+                    and self._learning_events % self.s["learning_eval_every_updates"] == 0):
+                # The evaluator appends this very same revision with measured
+                # model quality. Never write a second event for that revision.
+                self.learning_history.record(
+                    manager.get_model_state(), node=fields["node"], time_s=now,
+                    revision=revision, cause=cause,
+                    observations=fields["observations_retained"],
+                    revision_context={k:v for k,v in fields.items()
+                                      if k not in ("node", "time_s", "revision", "cause", "observations_retained")},
+                )
+            else:
+                # Lightweight revision history exists even when PyTorch
+                # evaluation is disabled or sampled only every N updates.
+                path = Path(self.node.results_dir) / "flame" / f"{self.node.spec.name}-learning.jsonl"
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with path.open("a", encoding="utf8") as stream:
+                    stream.write(json.dumps({"measurement": "revision_event", **fields}, separators=(",", ":")) + "\n")
         except Exception as exc:
+            # A failed optional accuracy evaluation must not erase the
+            # successful training/aggregation revision's provenance.
+            if "fields" in locals():
+                try:
+                    path = Path(self.node.results_dir) / "flame" / f"{self.node.spec.name}-learning.jsonl"
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    with path.open("a", encoding="utf8") as stream:
+                        stream.write(json.dumps({"measurement": "revision_event", **fields,
+                                                 "evaluation_error": str(exc)}, separators=(",", ":")) + "\n")
+                except (OSError, TypeError, ValueError):
+                    pass
             self._record("learning_evaluation_error", reason=str(exc))
 
     def _handle_sensor_observation(self, packet, source):
@@ -596,20 +872,75 @@ class FlameProtocol(ProtocolInterface):
         if neighbor is None or neighbor.association_state != AssociationState.ASSOCIATED:
             self._record("unassociated_sensor_rejected", source=source)
             return
+        # Workload validation belongs to CLIVE, not the payload-agnostic FLAME
+        # transport. Once stored, a malformed MNIST observation can poison *all*
+        # later trainer invocations; reject it before entering DatasetManager.
+        if self.s["trainer"] == "mnist":
+            payload = packet.get("payload")
+            if (not isinstance(payload, bytes) or len(payload) != 785
+                    or payload[784] > 9 or packet.get("sensor_type") != 1):
+                self._record("invalid_mnist_sample_rejected", source=source,
+                             message_id=packet.get("data_id"),
+                             length=(len(payload) if isinstance(payload, bytes) else None),
+                             reason="expected sensor_type=1, 784 pixels and label 0-9")
+                return
+        processing_stage = "flame_sensor_handling"
         try:
-            previous_id = self.fl.model_manager.get_update_id()
-            self.fl.handle_message(packet)
+            progress_revision = getattr(self.fl.model_manager, "get_revision", None)
+            if progress_revision is None:
+                progress_revision = self.fl.model_manager.get_update_id
+            previous_id = progress_revision()
+            if self.fl.model_manager.get_update_id() >= 0xFF:
+                # FLAME's ModelManager cannot produce revision 256. Continue
+                # retaining observations, but do not invoke Trainer.train():
+                # it would consume samples before update_from_trainer raises.
+                self.fl.dataset_manager.receive_sensor_data(packet)
+                self._revision_limit_reached(
+                    OverflowError("Model update ID cannot exceed 8 bits."),
+                    trigger="sensor_data", source=source)
+            else:
+                self.fl.handle_message(packet)
+            processing_stage = "clive_sensor_accounting"
+            observation_key = (tuple(source), packet.get("data_id"), packet.get("sequence_number"))
+            if observation_key not in self._unique_observation_keys:
+                self._unique_observation_keys.add(observation_key)
+                payload = packet.get("payload", b"")
+                self._useful_sensor_bytes += len(payload)
+                self.stats["unique_sensor_observations_received"] += 1
+                # The last byte of a 785-byte MNIST observation is its true
+                # digit label. Unknown/non-MNIST payloads are not guessed.
+                if isinstance(payload, bytes) and len(payload) == 785 and payload[-1] < 10:
+                    self._received_digit_counts[payload[-1]] += 1
+                else:
+                    self._received_digit_unclassified += 1
+                if self.stats["unique_sensor_observations_received"] > getattr(self, "capacity_settings", {}).get("dataset", self.s["dataset_capacity"]):
+                    self.stats["observations_evicted_at_least"] += 1
+            else:
+                self.stats["duplicate_sensor_observation_events"] += 1
             self._record("sensor_received", source=source,
                          packet_type=int(packet["packet_type"]),
                          sequence_number=packet.get("sequence_number"),
                          message_id=packet.get("data_id"))
-            if self.fl.model_manager.get_update_id() > previous_id:
+            if progress_revision() > previous_id:
                 self._record("trained", update_id=self.fl.model_manager.get_update_id(),
                              trigger_sequence_number=packet.get("sequence_number"))
                 self._record_learning("local_training")
+                processing_stage = "clive_model_dispatch"
                 self._collect_model_update()
+        except OverflowError as error:
+            if "Model update ID cannot exceed 8 bits" not in str(error):
+                self._record("fl_error", reason=str(error))
+                raise
+            self._revision_limit_reached(error, trigger="sensor_data", source=source)
         except Exception as error:
-            self._record("fl_error", reason=str(error))
+            # Attribute by execution stage, not simply by the fact that this
+            # callback services a FLAME packet.
+            self._record("fl_error", reason=str(error),
+                         component=("flame" if processing_stage == "flame_sensor_handling"
+                                    else "clive_integration"),
+                         stage=processing_stage,
+                         exception_type=type(error).__name__, source=source,
+                         data_id=packet.get("data_id"))
             raise
 
     def _handle_peer_model(self, packet, source):
@@ -618,23 +949,96 @@ class FlameProtocol(ProtocolInterface):
                 or neighbor.model_id != self.model_id):
             self._record("invalid_model_peer", source=source)
             return
+        processing_stage = "flame_model_processing"
         try:
-            previous_id = self.fl.model_manager.get_update_id()
+            progress_revision = getattr(self.fl.model_manager, "get_revision", None)
+            if progress_revision is None:
+                progress_revision = self.fl.model_manager.get_update_id
+            previous_id = progress_revision()
+            if self.fl.model_manager.get_update_id() >= 0xFF:
+                # Never let an unreachable revision-256 aggregation mutate
+                # FLAME's buffer or raise across the CLIVE worker boundary.
+                self._revision_limit_reached(
+                    OverflowError("Model update ID cannot exceed 8 bits."),
+                    trigger="model_update", source=source)
+                self._record("model_rejected_revision_limit", source=source,
+                             message_id=packet.get("update_id"))
+                return
+            update_key = (tuple(source), packet.get("update_id"))
+            aggregation = self.fl.aggregation
+            seen = getattr(aggregation, "_seen_updates", None)
+            was_seen = (update_key in seen) if seen is not None else False
             self.fl.handle_message(packet)
-            self._record("model_received", source=source,
-                         packet_type=int(packet["packet_type"]),
-                         sequence_number=packet.get("sequence_number"),
-                         message_id=packet.get("update_id"))
-            if self.fl.model_manager.get_update_id() > previous_id:
+            processing_stage = "clive_model_accounting"
+            # The team FLAME branch has no last_receive_accepted flag. The
+            # _seen_updates set proves admission to FLAME's aggregation buffer,
+            # NOT validation of tensor compatibility or successful aggregation.
+            # Do not revalidate or manipulate FLAME's buffer here: report the
+            # stage accurately, and let FLAME handle its own model processing.
+            if seen is not None:
+                accepted = not was_seen and update_key in seen
+            else:
+                accepted = bool(getattr(aggregation, "last_receive_accepted", False))
+            if accepted:
+                self._unique_model_keys.add(update_key)
+                self._useful_model_bytes += len(packet.get("payload", b""))
+                self.stats["unique_model_updates_received"] += 1
+                # Backwards-compatible count, now accompanied by an explicit
+                # admission-stage metric so dashboards cannot infer that the
+                # model was mathematically valid or incorporated into weights.
+                self.stats["model_updates_buffered_by_flame"] += 1
+                self._record("model_received", source=source,
+                             packet_type=int(packet["packet_type"]),
+                             sequence_number=packet.get("sequence_number"),
+                             message_id=packet.get("update_id"),
+                             acceptance_stage="flame_aggregation_buffer",
+                             applied_to_local_model=progress_revision() > previous_id)
+            else:
+                rejection_kind = getattr(aggregation, "last_receive_rejection", None)
+                if rejection_kind is None and was_seen:
+                    rejection_kind = "duplicate"
+                if rejection_kind == "duplicate":
+                    self.stats["duplicate_model_update_events"] += 1
+                else:
+                    self.stats["rejected_model_update_events"] += 1
+                self._record("model_rejected_or_duplicate", source=source,
+                             sequence_number=packet.get("sequence_number"),
+                             message_id=packet.get("update_id"),
+                             rejection_kind=rejection_kind or "not_accepted",
+                             reason="FLAME rejected or deduplicated MODEL_UPDATE")
+            if progress_revision() > previous_id:
                 # Peer that triggered this aggregation; other buffered peers may
                 # have contributed too. Do not imply it was the sole contributor.
+                processing_stage = "clive_aggregation_reporting"
                 self._record("aggregated", update_id=self.fl.model_manager.get_update_id(),
                              trigger_sequence_number=packet.get("sequence_number"),
                              trigger_peer=source)
-                self._record_learning("peer_aggregation")
-                self._collect_model_update(exclude=source)
+                self._record_learning("peer_aggregation", peer=source,
+                                      peer_update_id=packet.get("update_id"))
+                # Follow the team-owned FLAME module's outbound decisions.
+                # A successful aggregation may queue MODEL_UPDATE; collect it
+                # through the same CLIVE/NodeSocket path used after training.
+                # The FLAME-supplied _exclude_source hint prevents sending the
+                # resulting update directly back to its triggering peer.
+                # Existing in-flight transfers remain owned by FLAME reliability.
+                processing_stage = "clive_model_dispatch"
+                self._collect_model_update()
+        except OverflowError as error:
+            if "Model update ID cannot exceed 8 bits" not in str(error):
+                self._record("fl_error", reason=str(error))
+                raise
+            self._revision_limit_reached(error, trigger="model_update", source=source)
         except Exception as error:
-            self._record("fl_error", reason=str(error))
+            # CLIVE cannot repair incompatible FLAME model states. Preserve
+            # exact boundary evidence and propagate the original exception;
+            # stage tagging distinguishes FLAME from CLIVE bookkeeping faults.
+            self._record("fl_error", reason=str(error),
+                         component=("flame.federated_learning" if processing_stage == "flame_model_processing"
+                                    else "clive_integration"),
+                         stage=processing_stage,
+                         exception_type=type(error).__name__,
+                         source=source, update_id=packet.get("update_id"),
+                         model_id=packet.get("model_id"))
             raise
 
     def _collect_model_update(self, exclude=None):
@@ -643,6 +1047,7 @@ class FlameProtocol(ProtocolInterface):
             self._update_exclude = exclude or message.get("_exclude_source")
             self._sent_updates.clear()
             # Old versions still have late ACKs; preserve their status for metrics.
+        self._abandon_stale_model_retries(reason="newer_flame_update_replaced_retry")
         self._send_pending_models()
 
     def _send_pending_models(self):
@@ -684,13 +1089,38 @@ class FlameProtocol(ProtocolInterface):
                 for n in self.neighbors.get_neighbors()
             ],
         }
+        result["configured_capacities"] = dict(self.capacity_settings)
+        result["buffer_overflows"] = {
+            "datagram": self.comms.datagram_buffer.receive_overflow_counter,
+            "receive_histories": {name: getattr(getattr(self.comms, name), "overflow_count", None)
+                for name in ("receive_buffer", "neighbor_buffer", "sensor_buffer",
+                             "fl_buffer", "ack_buffer", "error_buffer", "event_buffer")},
+        }
         result["workload"] = {
             "sample_source": self.s["sample_source"],
             "trainer": self.s["trainer"],
-            "real_neural_network_training": self.s["trainer"] == "mnist",
+            # Keep the legacy key, but make it an actual execution indicator.
+            # The trainer can be configured without ever reaching its first sample.
+            "real_neural_network_trainer_configured": self.s["trainer"] == "mnist",
+            "real_neural_network_training_executed": (
+                self.is_ch and self.s["trainer"] == "mnist" and self.stats.get("trained", 0) > 0
+            ),
+            "real_neural_network_training": (
+                self.is_ch and self.s["trainer"] == "mnist" and self.stats.get("trained", 0) > 0
+            ),
             "repeat_sensor_samples": self.s["repeat_sensor_samples"],
             "mnist_digit_assignment": self.s["mnist_distribution"],
             "mnist_digit": None if self.is_ch else self._sample_source.digit,
+        }
+        result["application_delivery"] = {
+            "unique_sensor_observations_received": self.stats.get("unique_sensor_observations_received", 0),
+            "unique_model_updates_received": self.stats.get("unique_model_updates_received", 0),
+            "model_updates_buffered_by_flame": self.stats.get("model_updates_buffered_by_flame", 0),
+            "model_acceptance_stage": "FLAME _seen_updates / aggregation buffer admission; not validated tensor compatibility or aggregation success",
+            "unique_sensor_payload_bytes_received": self._useful_sensor_bytes,
+            "unique_model_payload_bytes_received": self._useful_model_bytes,
+            "unique_useful_payload_bytes_received": self._useful_sensor_bytes + self._useful_model_bytes,
+            "note": "Unique accepted SENSOR_DATA and FLAME-buffer-admitted MODEL_UPDATE payloads. Model buffer admission does not prove compatible weights, successful aggregation, or learning quality; not radio throughput.",
         }
         if self.is_ch:
             result["model_update_id"] = self.fl.model_manager.get_update_id()
@@ -700,8 +1130,18 @@ class FlameProtocol(ProtocolInterface):
                 "every_updates": self.s["learning_eval_every_updates"] if self.learning_history else None,
                 "measurement": "held-out fixed subset, not final 10k accuracy",
             }
+            result["received_digit_distribution"] = {
+                "counts": list(self._received_digit_counts),
+                "unclassified": self._received_digit_unclassified,
+                "total_unique_received": self.stats.get("unique_sensor_observations_received", 0),
+                "sample_source": self.s["sample_source"],
+                "scope": "Lifetime unique accepted SENSOR_DATA observations at this CH; "
+                         "not sensor assignment, retained dataset, training batch, or predictions",
+            }
             result["observations_retained"] = self.fl.dataset_manager.get_observation_count()
             result["observations"] = result["observations_retained"]  # backward compatibility
+            result["observations_accepted_unique"] = self.stats.get("unique_sensor_observations_received", 0)
+            result["observations_evicted_at_least"] = self.stats.get("observations_evicted_at_least", 0)
             # Evaluate the final aggregated state, not the trainer's possibly
             # stale last locally-trained weights. Keep this CLIVE-only.
             if self.s["evaluate_accuracy"] or self.s["save_final_model"]:
@@ -721,14 +1161,30 @@ class FlameProtocol(ProtocolInterface):
             result["model_transfer_summary"] = {
                 "started_versions": len(states),
                 "completed_versions": states.count("complete"),
-                "failed_versions": states.count("failed") + states.count("retry_exhausted"),
-                "unfinished_versions": states.count("pending"),
+                "failed_versions": states.count("retry_exhausted") + states.count("failed"),
+                "unfinished_versions": states.count("pending") + states.count("retry_wait"),
+                "censored_at_cutoff": states.count("pending") + states.count("retry_wait"),
+                "retry_wait_versions": states.count("retry_wait"),
+                "superseded_versions": states.count("superseded"),
                 "retry_scheduled": self.stats.get("model_retry_scheduled", 0),
-                "note": "sender ACK outcomes; failures may be caused by FLAME or emulated radio",
+                "retry_superseded": self.stats.get("model_retry_superseded", 0),
+                "status_counts_reconcile": len(states) == sum(states.count(state) for state in
+                    ("complete", "failed", "retry_exhausted", "pending", "retry_wait", "superseded")),
+                "note": "sender ACK outcomes; pending/retry-wait at cutoff is censored; superseded updates "
+                        "had their cached retry payload replaced/invalidated, not a confirmed radio loss; "
+                        "failures may be caused by FLAME or emulated radio",
+            }
+            result["protocol_callback_timing"] = {
+                "longest_on_datagram_wall_s": self._max_protocol_callback_wall_s,
+                "callbacks_at_or_above_ack_timeout": self.stats.get("protocol_callback_slow", 0),
+                "note": "diagnostic only; synchronous training can delay ACK processing",
             }
         else:
             result["offline_samples_remaining"] = len(self._offline_samples)
             result["samples_generated"] = self._sample_source.cursor
+            result["sensing_buffer_drops"] = self.sensing.dropped_samples if self.sensing else 0
+            result["sensing_buffer_remaining"] = self.sensing.sample_buffer_size if self.sensing else 0
+            result["offline_buffer_drops"] = self.stats.get("offline_sample_dropped", 0)
         if self.node.results_dir:
             from orchestrator import atomic_json
             path = Path(self.node.results_dir) / "flame" / f"{self.node.spec.name}.json"

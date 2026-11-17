@@ -1,117 +1,133 @@
 <!doctype html>
 <html lang="en">
-<head>
+<head><script src="theme.js"></script>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>CLIVE Visualizer</title>
-  <link rel="stylesheet" href="/styles.css">
-</head>
+  <link rel="stylesheet" href="styles.css"><link rel="stylesheet" href="ui-shell.css">
+<link rel="stylesheet" href="theme.css"></head>
 <body>
-  <header class="topbar">
-    <div class="brand-block">
-      <div class="app-monogram" aria-hidden="true">
-        <svg viewBox="0 0 44 44" fill="none"><path d="M9 31V13L22 6L35 13V31L22 38L9 31Z" stroke="currentColor" stroke-width="1.7"/><path d="M13 27L21 19L27 25L34 16" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"/><circle cx="21" cy="19" r="2.5" fill="currentColor"/><circle cx="27" cy="25" r="2.5" fill="currentColor"/></svg>
-      </div>
-      <div class="brand-copy"><div class="eyebrow">NETWORK RESEARCH / EXPERIMENT ANALYSIS</div>
-        <h1>CLIVE <span>OBSERVATORY</span></h1>
-        <p class="topbar-subtitle">FLAME protocol &amp; mobility visualization</p></div>
-    </div>
-    <div class="header-actions">
-      <a class="icon-label-button" id="learningPageLink" href="/learning.html">Model learning ↗</a>
-      <label class="field run-select-wrap"><span class="field-caption">SELECTED EXPERIMENT</span>
-        <select id="runSelect" aria-label="Choose experiment run"></select>
-      </label>
-      <div id="statusPill" class="status waiting">WAITING</div>
-      <button id="sidebarToggle" class="icon-label-button" type="button" aria-pressed="false" title="Show or hide the information sidebar"><span aria-hidden="true">▣</span> <span class="sidebar-button-text">Hide panel</span></button>
-    </div>
-  </header>
-
+  <header class="clive-site-header" role="banner"><a class="clive-site-brand" data-studio-link="setup" href="/" aria-label="CLIVE home"><span class="clive-brand-emblem"><svg viewBox="0 0 32 32" aria-hidden="true"><path d="M6 21V11l10-6 10 6v10l-10 6z"/><path d="M6 21l10-10 10 10M16 11v16"/></svg></span><span class="clive-brand-wordmark">CLIVE<small>NETWORK EMULATOR</small></span></a><nav class="clive-site-nav" aria-label="CLIVE sections"><a class="clive-site-link" data-studio-link="setup" href="/">Setup</a><a class="clive-site-link active" href="./" aria-current="page">Topology</a><a class="clive-site-link" id="learningPageLink" href="learning.html">Learning</a><a class="clive-site-link" id="eventsPageLink" href="events.html">Events</a><a class="clive-site-link" data-studio-link="history" href="/">Run History</a></nav><div class="clive-site-context clive-run-context"><label class="clive-context-label" for="runSelect">RUN</label><select id="runSelect" aria-label="Choose results run"><option value="">No runs yet</option></select><div id="statusPill" class="status waiting" hidden>WAITING</div><button id="cliveThemeToggle" type="button" class="clive-theme-toggle" aria-pressed="false" aria-label="Switch to light mode" title="Switch to light mode"><span class="theme-icon" aria-hidden="true">☀</span><span class="theme-label">Light mode</span></button></div></header>
   <main class="app-shell" id="appShell">
     <section class="panel topology-panel">
       <div class="panel-head panel-head-main">
         <div class="map-heading"><div class="panel-kicker"><span class="signal-pip"></span> EXPERIMENT VIEW / 01</div>
-          <h2>Network topology</h2>
+          <div class="heading-help"><h2>Network topology</h2><button type="button" class="help-trigger" data-help="topology" aria-label="Help: Network topology" title="About Network topology" aria-haspopup="dialog">?</button></div>
           <p id="topologySubtitle">Waiting for a CLIVE run…</p>
         </div>
         <div class="header-cluster">
+          <button id="sidebarToggle" class="icon-label-button" type="button" aria-pressed="false" title="Show or hide the node inspector"><span aria-hidden="true">▣</span> <span class="sidebar-button-text">Hide inspector</span></button>
           <button id="canvasFocusToggle" class="icon-label-button focus-button" type="button" aria-pressed="false" title="Focus on the topology"><span aria-hidden="true">⛶</span><span>Focus map</span></button>
         </div>
       </div>
 
       <div class="mode-bar">
         <div class="mode-bar-main">
-          <span class="mini-label" id="viewModeLabel">DISPLAY MODE</span>
+          <span class="mini-label" id="viewModeLabel">WHAT TO SHOW</span>
           <div class="mode-switch" role="group" aria-label="Topology visualization mode">
-            <button type="button" class="mode-button active" data-mode="protocol" aria-pressed="true"><span class="mode-icon" aria-hidden="true">⬡</span> FLAME protocol</button>
-            <button type="button" class="mode-button" data-mode="radio" aria-pressed="false"><span class="mode-icon" aria-hidden="true">◎</span> Radio range</button>
-            <button type="button" class="mode-button" data-mode="traffic" aria-pressed="false"><span class="mode-icon" aria-hidden="true">↗</span> Traffic</button>
+            <button type="button" class="mode-button active" data-mode="protocol" aria-pressed="true"><span class="mode-icon" aria-hidden="true">⬡</span> Protocol evidence</button>
+            <button type="button" class="mode-button" data-mode="radio" aria-pressed="false"><span class="mode-icon" aria-hidden="true">◎</span> Radio reachability</button>
+            <button type="button" class="mode-button" data-mode="traffic" aria-pressed="false"><span class="mode-icon" aria-hidden="true">↗</span> Packet activity</button>
             <button type="button" class="mode-button" data-mode="none" aria-pressed="false"><span class="mode-icon" aria-hidden="true">◌</span> Nodes only</button>
           </div>
         </div>
         <details class="layer-menu" id="layerMenu">
-          <summary aria-label="Open map layers and display settings"><span class="slider-icon" aria-hidden="true">☷</span> Layers <span class="chevron" aria-hidden="true">⌄</span></summary>
+          <summary aria-label="Open settings for selected topology view">Display settings <span class="chevron" aria-hidden="true">⌄</span></summary>
           <div class="layer-menu-content">
-            <div class="setting-head"><strong>Map layers</strong><span>DISPLAY OPTIONS</span></div>
-            <label class="switch-row" for="showBackbone"><span><strong>CH backbone candidates</strong><small>Optional potential CH radio links (not confirmed exchange)</small></span><input type="checkbox" id="showBackbone" role="switch"><i aria-hidden="true"></i></label>
-            <label class="switch-row" for="showCandidates"><span><strong>Selected node candidates</strong><small>Optional radio possibilities; not JOIN connections</small></span><input type="checkbox" id="showCandidates" role="switch"><i aria-hidden="true"></i></label>
-            <label class="switch-row" for="showModelFlow"><span><strong>Model transfer / aggregation line</strong><small>Only the focused recorded CH-to-CH model event</small></span><input type="checkbox" id="showModelFlow" role="switch" checked><i aria-hidden="true"></i></label>
-            <label class="switch-row" for="showDirectionArrows"><span><strong>Direction arrows</strong><small>Show where recorded model activity or reachable links point</small></span><input type="checkbox" id="showDirectionArrows" role="switch" checked><i aria-hidden="true"></i></label>
-            <label class="switch-row" for="showLinkLabels"><span><strong>Link labels</strong><small>Show node names on lines (off by default)</small></span><input type="checkbox" id="showLinkLabels" role="switch"><i aria-hidden="true"></i></label>
-            <label class="switch-row" for="showLabels"><span><strong>Node labels</strong><small>Always display node identifiers</small></span><input type="checkbox" id="showLabels" role="switch"><i aria-hidden="true"></i></label>
-            <label class="field stacky legacy-mode-select">Mode selector <select id="linkMode" aria-label="Topology link view">
-              <option value="protocol">FLAME protocol</option><option value="radio">Physical radio</option><option value="traffic">Observed traffic</option><option value="none">No links</option>
-            </select></label>
+            <div class="setting-head"><strong>Display settings</strong><span>VIEW-DEPENDENT</span></div>
+            <div class="layer-section-caption" data-layer-for="protocol">Protocol evidence • observed state, not hypothetical radio links</div>
+            <label class="switch-row" data-layer-for="protocol" for="showBackbone"><span><strong>Recent CH model exchanges</strong><small>Only CH pairs with recorded model activity; not a standing connection</small></span><input type="checkbox" id="showBackbone" role="switch" checked><i aria-hidden="true"></i></label>
+            <label class="switch-row" data-layer-for="protocol" for="showProtocolHighlights"><span><strong>Protocol action spotlight</strong><small>Highlight one recent recorded HELLO, JOIN, training or model event</small></span><input type="checkbox" id="showProtocolHighlights" role="switch" checked><i aria-hidden="true"></i></label>
+            <label class="switch-row" data-layer-for="protocol" for="showModelFlow"><span><strong>Model event arrow</strong><small>Show direction for a focused recorded model transfer / aggregation</small></span><input type="checkbox" id="showModelFlow" role="switch" checked><i aria-hidden="true"></i></label>
+            <div class="layer-section-caption" data-layer-for="radio">Radio reachability • predicted by CLIVE's link model, not a delivered packet</div>
+            <label class="switch-row" data-layer-for="radio" for="showCandidates"><span><strong>All reachable pairs</strong><small>Draw all pairs for up to 24 nodes; otherwise select a node to focus</small></span><input type="checkbox" id="showCandidates" role="switch" checked><i aria-hidden="true"></i></label>
+            <label class="switch-row" data-layer-for="radio" for="showDirectionArrows"><span><strong>Reachability direction</strong><small>Arrow means the source can attempt sending toward the target</small></span><input type="checkbox" id="showDirectionArrows" role="switch" checked><i aria-hidden="true"></i></label>
+            <div class="layer-section-caption" data-layer-for="traffic">Packet activity • recorded NodeSocket TX / RX / drop outcomes</div>
+            <p class="layer-help" data-layer-for="traffic">Packet dots represent recorded traffic; they are not proof of FLAME acceptance. Enable packet-event logging for new runs if empty.</p>
+            <p class="layer-help" data-layer-for="none">Only node positions and optional labels are shown. All network records remain available in Diagnostics.</p>
+            <div class="setting-head layer-common-head"><strong>Node identity</strong><span>ALL VIEWS</span></div>
+            <label class="layer-field" for="nodeLabelMode"><span>Label content</span>
+              <select id="nodeLabelMode" aria-label="Choose node labels">
+                <option value="name">Node name (CH-1, SN-1)</option>
+                <option value="overlay">Overlay IP (protocol identity)</option>
+                <option value="underlay">Underlay IP (local UDP socket)</option>
+                <option value="both">Name + overlay IP</option>
+                <option value="none">No map labels</option>
+              </select>
+            </label>
+            <label class="switch-row" for="showLabels"><span><strong>Labels on every node</strong><small>Off: show labels only for selected / hovered nodes</small></span><input type="checkbox" id="showLabels" role="switch"><i aria-hidden="true"></i></label>
+            <label class="switch-row" data-layer-for="protocol radio" for="showLinkLabels"><span><strong>Labels on displayed links</strong><small>May get crowded in large topologies</small></span><input type="checkbox" id="showLinkLabels" role="switch"><i aria-hidden="true"></i></label>
+            <select id="linkMode" class="legacy-mode-select" aria-label="Topology link view" hidden>
+              <option value="protocol">Protocol evidence</option><option value="radio">Radio reachability</option><option value="traffic">Packet activity</option><option value="none">Nodes only</option>
+            </select>
           </div>
         </details>
       </div>
+      <div id="modeExplanation" class="mode-explanation" role="status">Recorded FLAME association and recent model activity; not predicted reachability.</div>
 
       <div class="map-event-status" id="mapActivityStatus" data-stage="idle" role="status" aria-live="off">
-        <span class="map-action-tag">NO RECENT ACTION</span>
-        <span class="map-action-description">HELLO announces presence; JOIN requests association; JOIN_ACCEPT confirms acceptance.</span>
+        <span class="map-action-tag">NO ACTION AT THIS TIME</span>
+        <span class="map-action-description"></span>
       </div>
       <div class="canvas-wrap" id="canvasWrap">
         <canvas id="topologyCanvas"></canvas>
         <div id="canvasEmpty" class="canvas-empty"><span class="empty-symbol" aria-hidden="true">◎</span><strong>No network data yet</strong><span>Start an experiment or choose a previous run to inspect its topology.</span></div>
-        <div class="map-legend" aria-label="Topology legend"><span><i class="dot ch"></i> Cluster Head</span><span><i class="dot sn"></i> Sensor Node</span><span class="legend-divider"></span><span><i class="line strong"></i> Observed link</span><span>HELLO = blue halo</span><span>JOIN = amber arrow</span><span>Accepted = green check</span></div>
+        <div class="map-legend" aria-label="Topology legend"><span><i class="dot ch"></i> Cluster Head</span><span><i class="dot sn"></i> Sensor Node</span><span class="legend-divider"></span><span id="legendLinks">Solid green = recorded association · dashed red = now out of range</span></div>
         <div class="map-tools" aria-label="Zoom controls"><button id="zoomIn" type="button" title="Zoom in" aria-label="Zoom in">+</button><button id="zoomReset" type="button" title="Reset zoom and pan"><span id="zoomReadout">100%</span></button><button id="zoomOut" type="button" title="Zoom out" aria-label="Zoom out">−</button><button id="fitNodes" type="button" title="Fit all nodes on screen" aria-label="Fit all nodes on screen">FIT</button></div>
-        <div class="map-hint">DRAG TO PAN <b>·</b> SCROLL TO ZOOM <b>·</b> CLICK A NODE TO SEE CONNECTION HISTORY</div>
+        
         <div id="nodeTooltip" class="node-tooltip" hidden></div>
         <div class="canvas-corner" id="canvasCorner"></div>
       </div>
 
-      <div class="transport-bar">
-        <button id="playButton" class="play-button" type="button" aria-label="Play or pause experiment">▶</button>
-        <div class="time-readout"><strong id="timeReadout">0.000000 s</strong><span id="tickReadout">position tick 0</span></div>
-        <label for="timeSlider" class="sr-only">Experiment playback time</label>
-        <input id="timeSlider" type="range" min="0" max="1" value="0" step="0.000001">
-        <label class="exact-time-control" for="exactTime" title="Seek to a recorded simulation timestamp (seconds, up to six decimal places)">At <input id="exactTime" type="number" min="0" value="0.000000" step="0.000001" aria-label="Seek to simulation time in seconds"></label>
-        <label class="guided-control" title="Optional: pause at each recorded FLAME action. Off by default: 1× wall-clock playback."><input type="checkbox" id="guidedPlayback"> Guided steps</label>
-        <button id="nextAction" class="next-action-button" type="button" disabled title="Jump to the next recorded protocol action">Next action ›</button>
-        <label class="field inline speed-control">SPEED
+      <section class="transport-bar" aria-label="Experiment playback controls">
+        <button id="playButton" class="play-button" type="button" aria-label="Play or pause experiment">▶ Play</button>
+        <form id="seekForm" class="playback-clock playback-time-editor" aria-label="Playback time and precise seeking" title="Edit the current playback time, then press Enter to jump">
+          <label class="playback-overline" for="timeReadout">PLAYBACK <span class="playback-edit-hint">edit</span></label>
+          <div class="playback-time-field">
+            <input id="timeReadout" type="number" min="0" value="0.000000" step="0.000001" inputmode="decimal" aria-label="Current playback time in seconds; edit and press Enter to seek" aria-describedby="playbackTimeHelp" title="Click to change playback time; press Enter to seek">
+            <span class="playback-unit" aria-hidden="true">s</span>
+          </div>
+          <span id="playbackTimeHelp" class="sr-only">Current time updates during playback. Enter a new time in seconds and press Enter or click away to seek.</span>
+          <span id="tickReadout" class="playback-trace-tick">position tick 0</span>
+        </form>
+        <div class="playback-timeline">
+          <div class="playback-track-wrap">
+            <input id="timeSlider" type="range" min="0" max="1" value="0" step="0.000001" aria-label="Experiment playback time">
+          </div>
+        </div>
+        <label class="speed-control" for="speedSelect"><span>Speed</span>
           <select id="speedSelect"><option value="0.25">0.25×</option><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option></select>
         </label>
-      </div>
-      <div class="panel-actions"><button id="toggleDiagnostics" type="button" aria-pressed="false">Show extra metrics</button><a href="/learning.html" id="learningInlineLink">See model accuracy ↗</a></div>
+        <details class="playback-options" id="playbackOptions">
+          <summary aria-label="Open playback options">Options <span aria-hidden="true">⌄</span></summary>
+          <div class="playback-options-content">
+            <div class="playback-guided-group">
+              <label class="guided-control" title="Step through recorded FLAME actions"><input type="checkbox" id="guidedPlayback"> Guided steps</label>
+              <button id="nextAction" class="next-action-button" type="button" disabled title="Jump to the next recorded protocol action">Next action ›</button>
+            </div>
+          </div>
+        </details>
+      </section>
       <div class="info-strip">
         <div id="linkSummary" class="link-summary" role="status">Select a node to inspect protocol-eligible links.</div>
-        <div id="linkNotice" class="link-notice">Solid lines are recorded associations; one action at a time is highlighted above. A HELLO is not a connection.</div>
+        <div id="linkNotice" class="link-notice" role="status"></div>
       </div>
     </section>
 
     <aside class="side-rail" id="sideRail">
       <details class="rail-card inspector-card" open>
         <summary>
-          <div><span class="summary-kicker">ACTIVE SELECTION / 02</span><strong>Node inspector</strong></div>
+          <div><span class="summary-kicker">ACTIVE SELECTION / 02</span><strong>Node inspector</strong> <button type="button" class="help-trigger" data-help="inspector" aria-label="Help: Node inspector" title="About Node inspector" aria-haspopup="dialog">?</button></div>
           <span id="selectedRole" class="summary-badge">None</span>
         </summary>
         <div class="rail-card-body">
-          <div id="selectedNode" class="selected-empty">Click a node to inspect live reachability, membership attempts, accepted connections and disconnect history.</div>
+          <div id="selectedNode" class="selected-empty">Select a node on the map.</div>
         </div>
       </details>
 
       <details class="rail-card metrics-card" open>
         <summary>
-          <div><span class="summary-kicker">EXPERIMENT SUMMARY / 03</span><strong>Network metrics</strong></div>
+          <div><span class="summary-kicker">EXPERIMENT SUMMARY / 03</span><strong>Network metrics</strong> <button type="button" class="help-trigger" data-help="network-metrics" aria-label="Help: Network metrics" title="About Network metrics" aria-haspopup="dialog">?</button></div>
           <span id="metricsMode" class="summary-badge">—</span>
         </summary>
         <div class="rail-card-body">
@@ -124,7 +140,8 @@
             <article class="advanced-metric"><span>Recipient drop ratio</span><strong id="mDropRatio">—</strong></article>
             <article class="advanced-metric"><span>Modeled TX energy</span><strong id="mEnergy">—</strong></article>
           </div>
-          <p id="protocolHealth" class="event-footnote" role="status">Process completion and FLAME model delivery are separate results. RX counts broadcast fanout; do not divide RX by TX to calculate PDR. TX energy is a simplified model, not a calibrated radio measurement.</p>
+          <button id="toggleDiagnostics" class="metric-toggle" type="button" aria-pressed="false">Show more metrics</button>
+          <p id="protocolHealth" class="event-footnote" role="status"></p>
         </div>
       </details>
 
@@ -132,7 +149,7 @@
         <summary>
           <div>
             <span class="summary-kicker">SCENARIO DETAILS / 04</span>
-            <strong>Experiment config</strong>
+            <strong>Experiment config</strong> <button type="button" class="help-trigger" data-help="config" aria-label="Help: Experiment configuration" title="About Experiment configuration" aria-haspopup="dialog">?</button>
           </div>
           <span id="configRun" class="summary-badge">—</span>
         </summary>
@@ -146,11 +163,10 @@
       <div class="panel-head compact workbench-head">
         <div>
           <div class="panel-kicker">DETAILED TELEMETRY / 05</div>
-          <h2>Diagnostics</h2>
-          <p>Explore recorded traffic, protocol events, and per-node metrics.</p>
+          <div class="heading-help"><h2>Diagnostics</h2><button type="button" class="help-trigger" data-help="diagnostics" aria-label="Help: Diagnostics" title="About Diagnostics" aria-haspopup="dialog">?</button></div>
         </div>
         <div class="workbench-tabs" role="tablist" aria-label="Visualizer detail panes">
-          <button class="tab-button active" type="button" role="tab" aria-selected="true" data-target="trafficPanel" id="tab-traffic">Traffic</button>
+          <button class="tab-button active" type="button" role="tab" aria-selected="true" data-target="trafficPanel" id="tab-traffic">Packet activity</button>
           <button class="tab-button" type="button" role="tab" aria-selected="false" data-target="eventsPanel" id="tab-events">Events</button>
           <button class="tab-button" type="button" role="tab" aria-selected="false" data-target="nodesPanel" id="tab-nodes">Nodes</button>
         </div>
@@ -160,8 +176,7 @@
         <section id="trafficPanel" class="tab-panel traffic-panel" role="tabpanel" aria-labelledby="tab-traffic">
           <div class="section-intro">
             <div>
-              <h3>Traffic timeline</h3>
-              <p>Recorded TX, RX and delivery drops per one-second interval. Hover the chart for exact values.</p>
+              <div class="heading-help"><h3>Traffic timeline</h3><button type="button" class="help-trigger" data-help="traffic" aria-label="Help: Traffic timeline" title="About Traffic timeline" aria-haspopup="dialog">?</button></div>
             </div>
             <span id="trafficSummary" class="muted">—</span>
           </div>
@@ -175,40 +190,63 @@
         <section id="eventsPanel" class="tab-panel events-panel" role="tabpanel" aria-labelledby="tab-events" hidden>
           <div class="section-intro section-intro-spaced">
             <div>
-              <h3>What happened?</h3>
-              <p>Switch between protocol decisions, individual packets and CLIVE network deliveries.</p>
+              <div class="heading-help"><h3>Events</h3><button type="button" class="help-trigger" data-help="events" aria-label="Help: Events" title="About Events" aria-haspopup="dialog">?</button></div>
             </div>
             <span id="eventSummary" class="muted" aria-live="polite">—</span>
           </div>
           <div class="event-toolbar simple-event-toolbar">
             <label class="field inline compact-field">View
               <select id="eventFilter" aria-label="Event stream view">
-                <option value="activity" selected>FLAME activity</option>
-                <option value="packets">FLAME packets sent (TX)</option>
-                <option value="network">CLIVE network (TX, RX, loss)</option>
+                <option value="highlights" selected>Highlights</option>
+                <option value="flame">FLAME · All</option>
+                <option value="flame-packet">FLAME · Packet TX/RX</option>
+                <option value="flame-action">FLAME · Action</option>
+                <option value="flame-internal">FLAME · Internal</option>
+                <option value="clive">CLIVE</option>
+                <option value="network">Network · TX/RX/drops</option>
+                <option value="drop">Failures / drops</option>
+                <option value="all">All events (advanced)</option>
+              </select>
+            </label>
+            <label class="field inline compact-field">Order
+              <select id="eventSort" aria-label="Sort events by time">
+                <option value="asc">Oldest first</option>
+                <option value="desc" selected>Newest first</option>
               </select>
             </label>
             <label class="field inline compact-field event-search-field">Search
               <input id="eventSearch" type="search" placeholder="Node, packet or reason…" aria-label="Search recorded events">
             </label>
-            <span class="event-window-note">Latest 8 seconds before playback</span>
+            <details class="event-more-filters" id="eventMoreFilters">
+              <summary>More filters</summary>
+              <div class="event-more-fields">
+                <label>Node<select id="eventNode"><option value="">All nodes</option></select></label>
+                <label>Packet<select id="eventPacket">
+                  <option value="all">All packet families</option><option value="HELLO">HELLO</option>
+                  <option value="JOIN">JOIN</option><option value="JOIN_ACCEPT">JOIN_ACCEPT</option>
+                  <option value="LEAVE">LEAVE</option><option value="SENSOR_DATA">SENSOR_DATA</option>
+                  <option value="SENSOR_DATA_ACK">SENSOR_DATA_ACK</option>
+                  <option value="MODEL_UPDATE">MODEL_UPDATE</option>
+                  <option value="MODEL_UPDATE_ACK">MODEL_UPDATE_ACK</option>
+                </select></label>
+                <label>Outcome<select id="eventOutcome"><option value="all">Any</option><option value="failure">Failures only</option><option value="nonfailure">Not flagged as failure</option></select></label>
+              </div>
+            </details>
+            <span class="event-window-note">Recorded 8-second playback window</span>
             <input type="hidden" id="eventWindow" value="8">
           </div>
-          <p class="event-window-explanation">FLAME activity = joining, training, aggregating and other decisions. Packets = named outgoing FLAME datagrams and local send failures. CLIVE network = TX, RX and radio losses. The list is a recent preview; open the archive for every recorded match.</p>
           <div class="event-table-wrap">
             <table class="event-table">
               <thead><tr><th>At</th><th>Source</th><th>What happened</th><th>From → To</th><th>Packet / sequence</th><th>Inspect</th></tr></thead>
               <tbody id="eventRows"></tbody>
             </table>
           </div>
-          <p class="event-footnote"><a id="eventArchiveLink" href="/events.html">Open complete recorded history ↗</a> · <a id="eventProblemsLink" href="/events.html?category=drop">See failures only ↗</a> · Packet seq is a FLAME packet identifier; an action such as training has no outgoing packet sequence number. Records not logged by a run cannot be recovered.</p>
         </section>
 
         <section id="nodesPanel" class="tab-panel nodes-panel" role="tabpanel" aria-labelledby="tab-nodes" hidden>
           <div class="section-intro section-intro-spaced">
             <div>
-              <h3>Nodes</h3>
-              <p>Per-node final metrics when available; accumulated counters otherwise.</p>
+              <div class="heading-help"><h3>Nodes</h3><button type="button" class="help-trigger" data-help="nodes" aria-label="Help: Node metrics" title="About Node metrics" aria-haspopup="dialog">?</button></div>
             </div>
             <label class="field inline compact-field">Find node
               <input id="nodeSearch" placeholder="Filter nodes…">
@@ -225,11 +263,20 @@
     </section>
   </main>
 
-  <footer><span>CLIVE / FLAME EXPERIMENT OBSERVATORY</span><span>Observation only · Reachability is not routing · No protocol timers are advanced by this view</span></footer>
-  <script src="/event_stream.js"></script>
-  <script src="/connection_tracker.js"></script>
-  <script src="/map_activity.js"></script>
-  <script src="/guided_playback.js"></script>
-  <script src="/app.js"></script>
+  <footer><span>CLIVE / FLAME EXPERIMENT OBSERVATORY</span></footer>
+<template id="help-topology"><h2>Network topology</h2><p>Protocol evidence draws observed FLAME association state and recent peer model exchanges. Radio reachability draws only CLIVE-computed possible one-hop paths: a blue dotted line is not a JOIN, an ACK, or a packet delivery. Packet activity visualizes actual logged NodeSocket outcomes. Choose node name or overlay/underlay IP labels in Display settings; overlay IP is the protocol identity while underlay IP is the local transport endpoint. Drag to pan, scroll to zoom, click a node to focus. Playback timestamps are simulation time, not wall clock time.</p></template>
+<template id="help-inspector"><h2>Node inspector</h2><p>Click a node to see its role, reachable neighbors, association attempts, accepted membership and disconnect history at the selected playback time. A radio link can disappear before FLAME expires its membership timeout.</p></template>
+<template id="help-network-metrics"><h2>Network metrics</h2><p>TX packets are radio emissions; RX packets can count multiple receivers of a broadcast, so RX divided by TX is not a valid overall packet delivery ratio. Use recipient-level delivery opportunities for that measure. Model transfers completed are separately confirmed by FLAME and are not equivalent to NodeSocket handoffs. TX energy is a modeled estimate, not a hardware measurement. Run termination and protocol success must be evaluated separately.</p></template>
+<template id="help-config"><h2>Experiment configuration</h2><p>This panel displays the selected run’s recorded scenario parameters. Changing buffers or network settings in Experiment Studio affects new runs only; old results cannot be retroactively modified.</p></template>
+<template id="help-diagnostics"><h2>Diagnostics</h2><p>Switch among traffic, events and per-node counters. The graph and tables are derived from the selected experiment’s recorded output, not inferred from the animation. Complete event history is available separately when event logging was enabled.</p></template>
+<template id="help-traffic"><h2>Traffic timeline</h2><p>This graph shows emitted packets, recipient receptions and modeled drops per simulation-second interval. Hover to read recorded values. Broadcast fan-out means TX and RX totals are not directly interchangeable; the graph is packet activity, not application-level delivery success.</p></template>
+<template id="help-events"><h2>Recorded events</h2><p>Highlights shows only the main narrated actions. FLAME — all combines packet-driven and internal FLAME behavior observed by CLIVE's adapter. FLAME packets / packet-driven focuses on HELLO, JOIN, JOIN_ACCEPT, SENSOR_DATA, MODEL_UPDATE and LEAVE related actions. FLAME internal / training focuses on reassembly, training, aggregation and state transitions. CLIVE runtime / adapter shows startup, sample generation and retry bookkeeping. CLIVE network shows NodeSocket TX/RX/loss. Failure filtering works across these sources without changing their origin badges. This is a recent event preview relative to playback time. Open Event History for paged records. Packet sequence numbers identify outgoing packets when available; local training events have no packet sequence. Events not saved by the scenario logger cannot be reconstructed.</p></template>
+<template id="help-nodes"><h2>Node metrics</h2><p>Per-node TX, RX, drop, bits and estimated energy counters come from the emulated node output. Final metrics are displayed when available, otherwise accumulated recorded counters are shown.</p></template>
+  <script src="help.js"></script>
+  <script src="event_stream.js"></script>
+  <script src="connection_tracker.js"></script>
+  <script src="map_activity.js"></script>
+  <script src="guided_playback.js"></script>
+  <script src="ui-nav.js"></script><script src="app.js"></script>
 </body>
 </html>

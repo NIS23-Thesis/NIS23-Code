@@ -14,7 +14,7 @@ Or (cross-platform):
 python clive/control_center.py --open
 ```
 
-The controller opens **http://127.0.0.1:8767/** in your browser. The topology visualizer is automatically served at **http://127.0.0.1:8766/**. You do **not** have to open VS Code or edit JSON.
+The unified CLIVE application opens at **http://127.0.0.1:9767/**. Experiment Setup and Run History use `/`, the topology is at `/topology/`, Model Learning is at `/topology/learning.html`, and Events are at `/topology/events.html` on **the same port**. You do **not** need to open VS Code, edit JSON, or switch between two servers.
 
 The GUI and emulator run on your own computer. Keep the controller terminal open while using the dashboard. Press Ctrl+C to close the server (running experiments and their child processes are stopped on shutdown).
 
@@ -26,8 +26,8 @@ For real MNIST/PyTorch training, install `numpy` and `torch` in the Python envir
 2. **Edit** any setup field under General, Mobility & topology, Radio & network, FLAME, or Diagnostics. These controls cover the complete scenario schema. For **manual topology**, select Manual and use **Auto-populate all node coordinates** or edit the individual X/Y entries.
 3. **Save preset** to create your own reusable configuration in `clive/configs/gui/`. Bundled scenarios are never overwritten; editing them and saving creates a custom copy.
 4. Click **Run experiment**. The dashboard generates a frozen JSON snapshot under `clive/results/_control/`, then executes `clive.py` in a separate process using the selected settings. You can run unsaved configurations too.
-5. The **Live monitor** displays process state, progress estimate, launcher output, a **Stop experiment** button, and links to the topology/packet visualizer.
-6. The **Run history** lists previous runs and displays metric summaries. Detailed run outputs remain under `clive/results/run-*/`.
+5. The **run status strip** in Experiment setup displays progress, execution output, **Stop run**, and a **View topology** link. Topology playback and network activity are only in the Visualizer, not a duplicate monitor page.
+6. The **Run history** lists previous runs. **View topology** opens the selected run in the actual Visualizer; **Metrics** expands a summary in Studio. Detailed outputs remain under `clive/results/run-*/`.
 
 **Stop** sends termination to the entire launched process group so CLIVE's node and radio children do not continue running unnoticed. Only one experiment can be active in a controller instance at a time.
 

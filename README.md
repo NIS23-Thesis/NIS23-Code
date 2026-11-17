@@ -24,3 +24,19 @@ benchmarks. All FLAME protocol implementation files are unchanged.
 # NIS23-Code
 
 Run ./start_gui.sh
+
+### Unified CLIVE web application
+
+Run `./start_gui.sh` and use **http://127.0.0.1:9767/**. All normal
+views share this origin: Setup/History (`/`), Topology (`/topology/`),
+Model Learning (`/topology/learning.html`) and Events
+(`/topology/events.html`). Run selection carries through the results views;
+no second web port is required. The standalone `clive/visualizer.py` launcher
+remains available for developers.
+
+Frontend organization: `clive/control_ui/` (experiment editing),
+`clive/visualizer/static/` (recorded results), and `clive/ui_shared/`
+(the canonical common header stylesheet). To update the shared header CSS,
+edit `clive/ui_shared/shell.css` and run
+`python clive/scripts/sync_ui_shell.py`. These are presentation assets only;
+FLAME source and CLIVE network simulation logic are unchanged.
