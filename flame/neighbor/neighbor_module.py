@@ -28,6 +28,7 @@ class Neighbor:
     expiration_time: float
     model_id: Optional[int] = None
     join_id: Optional[int] = None
+    neighbor_timeout: float = 30.0
 
 
 class NeighborModule:
@@ -65,6 +66,7 @@ class NeighborModule:
         expiration_time: float,
         model_id: Optional[int] = None,
         join_id: Optional[int] = None,
+        neighbor_timeout: float = 30.0,
     ) -> None:
         key = (ip_address, port)
 
@@ -77,6 +79,7 @@ class NeighborModule:
             expiration_time=expiration_time,
             model_id=model_id,
             join_id=join_id,
+            neighbor_timeout=neighbor_timeout,
         )
 
     def get_neighbor(
@@ -188,12 +191,16 @@ class NeighborModule:
                 last_heard=current_time,
                 expiration_time=expiration_time,
                 model_id=model_id,
+                neighbor_timeout=neighbor_timeout,
             )
 
         else:
+            if existing_neighbor.association_state == AssociationState.ASSOCIATED:
+                neighbor_timeout = existing_neighbor.neighbor_timeout
             existing_neighbor.node_role = node_role
             existing_neighbor.last_heard = current_time
-            existing_neighbor.expiration_time = expiration_time
+            existing_neighbor.expiration_time = current_time + neighbor_timeout
+            existing_neighbor.neighbor_timeout = neighbor_timeout
             existing_neighbor.model_id = model_id
 
             if existing_neighbor.association_state == AssociationState.INACTIVE:
@@ -241,6 +248,7 @@ class NeighborModule:
                 last_heard=current_time,
                 expiration_time=expiration_time,
                 model_id=model_id,
+                neighbor_timeout=neighbor_timeout,
             )
 
             neighbor = self.get_neighbor(
@@ -256,6 +264,7 @@ class NeighborModule:
                 existing_neighbor.association_state = AssociationState.JOIN_PENDING
             existing_neighbor.last_heard = current_time
             existing_neighbor.expiration_time = expiration_time
+            existing_neighbor.neighbor_timeout = neighbor_timeout
             existing_neighbor.model_id = model_id
             existing_neighbor.join_id = join_id
 
@@ -302,13 +311,13 @@ class NeighborModule:
                 expiration_time=expiration_time,
                 model_id=model_id,
                 join_id=join_id,
+                neighbor_timeout=neighbor_timeout,
             )
         else:
             existing_neighbor.node_role = NodeRole.CLUSTER_HEAD
             if existing_neighbor.association_state != AssociationState.ASSOCIATED:
                 existing_neighbor.association_state = AssociationState.JOIN_PENDING
-            existing_neighbor.last_heard = current_time
-            existing_neighbor.expiration_time = expiration_time
+            # Sending a retry is not evidence that this Cluster Head is alive.
             existing_neighbor.model_id = model_id
             existing_neighbor.join_id = join_id
 
@@ -340,6 +349,7 @@ class NeighborModule:
         if neighbor.join_id != join_id:
             return False
 
+        neighbor.neighbor_timeout = neighbor_timeout
         if rejected:
             neighbor.association_state = AssociationState.DISCOVERED
             neighbor.last_heard = current_time
@@ -388,7 +398,7 @@ class NeighborModule:
         ip_address: str,
         port: int,
         current_time: Optional[float] = None,
-        neighbor_timeout: float = 30.0,
+        neighbor_timeout: Optional[float] = None,
     ) -> bool:
         if current_time is None:
             current_time = time.time()
@@ -401,6 +411,8 @@ class NeighborModule:
         if neighbor.node_role != NodeRole.SENSOR_NODE:
             return False
 
+        if neighbor_timeout is None:
+            neighbor_timeout = neighbor.neighbor_timeout
         if neighbor.association_state == AssociationState.JOIN_PENDING:
             neighbor.association_state = AssociationState.ASSOCIATED
             neighbor.last_heard = current_time
@@ -445,7 +457,7 @@ class NeighborModule:
         ip_address: str,
         port: int,
         current_time: Optional[float] = None,
-        neighbor_timeout: float = 30.0,
+        neighbor_timeout: Optional[float] = None,
     ) -> bool:
         """
         Refresh the membership lifetime of a known neighbor.
@@ -465,6 +477,8 @@ class NeighborModule:
         if neighbor.association_state == AssociationState.INACTIVE:
             return False
 
+        if neighbor_timeout is None:
+            neighbor_timeout = neighbor.neighbor_timeout
         neighbor.last_heard = current_time
         neighbor.expiration_time = (
             current_time + neighbor_timeout

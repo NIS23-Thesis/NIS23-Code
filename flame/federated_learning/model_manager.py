@@ -1,22 +1,31 @@
 """Local model state and outbound model-update buffering for FLAME."""
 
 from collections import deque
+import hashlib
+import io
+import json
 import pickle
+import struct
 from typing import Any, Deque, Dict, List, Optional
 
 from ..communication.message import PacketType
 
 
 _MODEL_STATE_MAGIC = b"FLMS"
-_MODEL_STATE_VERSION = 1
+_MODEL_STATE_VERSION = 2
 
 
 def serialize_model_state(model_state: Any) -> bytes:
-    """Serialize one complete local model state for a MODEL_UPDATE payload."""
-    return _MODEL_STATE_MAGIC + bytes([_MODEL_STATE_VERSION]) + pickle.dumps(
-        model_state,
-        protocol=pickle.HIGHEST_PROTOCOL,
-    )
+    """Encode numeric/tensor model data with a whole-payload checksum (v2)."""
+    try:
+        body = b"J" + json.dumps(model_state, allow_nan=False).encode("utf-8")
+    except TypeError:
+        import torch
+        buffer = io.BytesIO()
+        torch.save(model_state, buffer)
+        body = b"T" + buffer.getvalue()
+    return (_MODEL_STATE_MAGIC + bytes([_MODEL_STATE_VERSION])
+            + hashlib.sha256(body).digest() + body)
 
 
 def deserialize_model_state(payload: bytes) -> Any:
@@ -24,14 +33,26 @@ def deserialize_model_state(payload: bytes) -> Any:
     if not isinstance(payload, (bytes, bytearray)):
         raise TypeError("Serialized model state must be bytes-like.")
     raw_payload = bytes(payload)
-    header_length = len(_MODEL_STATE_MAGIC) + 1
+    header_length = len(_MODEL_STATE_MAGIC) + 1 + 32
     if len(raw_payload) <= header_length:
         raise ValueError("Serialized model state is too short.")
     if raw_payload[:len(_MODEL_STATE_MAGIC)] != _MODEL_STATE_MAGIC:
         raise ValueError("Payload is not a FLAME model state.")
     if raw_payload[len(_MODEL_STATE_MAGIC)] != _MODEL_STATE_VERSION:
         raise ValueError("Unsupported FLAME model state version.")
-    return pickle.loads(raw_payload[header_length:])
+    body = raw_payload[header_length:]
+    if hashlib.sha256(body).digest() != raw_payload[5:header_length]:
+        raise ValueError("Model state checksum mismatch.")
+    try:
+        if body[:1] == b"J":
+            return json.loads(body[1:])
+        if body[:1] == b"T":
+            import torch
+            return torch.load(io.BytesIO(body[1:]), map_location="cpu", weights_only=True)
+    except (ValueError, EOFError, OSError, RuntimeError, ImportError, IndexError,
+            KeyError, struct.error, pickle.UnpicklingError) as error:
+        raise ValueError("Invalid encoded model state.") from error
+    raise ValueError("Unsupported model state encoding.")
 
 
 class ModelManager:

@@ -107,6 +107,8 @@ def _configuration(plan):
             raise ValueError(f"flame.{name} must be finite and in (0,1]")
     if settings["initial_window_size"] > settings["max_window_size"]:
         raise ValueError("flame.initial_window_size cannot exceed max_window_size")
+    if not 1 <= settings["neighbor_timeout_s"] <= 127 or int(settings["neighbor_timeout_s"]) != settings["neighbor_timeout_s"]:
+        raise ValueError("flame.neighbor_timeout_s must be an integer from 1 to 127 seconds")
     if settings["trainer"] not in ("mnist", "mean_pixel"):
         raise ValueError("flame.trainer must be mnist or mean_pixel")
     if settings["sample_source"] not in ("mnist", "synthetic"):
@@ -319,6 +321,7 @@ class FlameProtocol(ProtocolInterface):
             socket_interface=_NodeSocketLossBoundary(node.socket, self),
             role=self.role, auto_start=False,
             poll_socket=False, neighbor_module=self.neighbors,
+            neighbor_timeout=self.s["neighbor_timeout_s"],
             route_handler=self._on_message,
             event_handler=self._on_comm_event,
             buffer_size=int(self.capacity_settings["datagram"]),
@@ -658,9 +661,13 @@ class FlameProtocol(ProtocolInterface):
         return neighbor is not None and neighbor.association_state == AssociationState.ASSOCIATED
 
     def _service_join(self, now_s):
-        if self._left or self._is_joined():
+        if self._left:
             return
-        self._joined_ch = None
+        self.neighbors.check_expired_neighbors()
+        if self._joined_ch is not None and not self._is_joined():
+            self._joined_ch = None
+            self._join_target = None
+            self._next_join = now_s
         if now_s < self._next_join:
             return
         # Choose the first compatible CH whose HELLO *this SN actually received*.
@@ -670,19 +677,22 @@ class FlameProtocol(ProtocolInterface):
                   if n.node_role == NodeRole.CLUSTER_HEAD
                   and n.association_state != AssociationState.INACTIVE
                   and n.model_id == self.model_id}
-        ch = next((active[address] for address in self._discovered_ch if address in active), None)
+        ch = active.get(self._joined_ch) or next(
+            (active[address] for address in self._discovered_ch if address in active), None)
         if ch is None:
             return
         dest = (ch.ip_address, ch.port)
-        self._join_nonce = (self._join_nonce + 1) & 0xFFFF
-        self.neighbors.start_join(ch.ip_address, ch.port, self._join_nonce, model_id=self.model_id)
+        if dest != self._join_target or ch.join_id is None or ch.association_state == AssociationState.DISCOVERED:
+            self._join_nonce = (self._join_nonce + 1) & 0xFFFF
+        self.neighbors.start_join(ch.ip_address, ch.port, self._join_nonce,
+                                 model_id=self.model_id, neighbor_timeout=self.s["neighbor_timeout_s"])
         queue_drops = getattr(self, "stats", {}).get("radio_send_queue_dropped", 0)
         self.comms.send_message({
             "packet_type": PacketType.JOIN, "role": 0,
             "join_id": self._join_nonce, "model_id": self.model_id,
         }, destination=dest)
         self._join_target = dest
-        self._next_join = now_s + self.s["join_retry_s"]
+        self._next_join = now_s + min(self.s["join_retry_s"], ch.neighbor_timeout / 2)
         if getattr(self, "stats", {}).get("radio_send_queue_dropped", 0) == queue_drops:
             self._record("join_sent", destination=dest)
         else:
@@ -715,11 +725,6 @@ class FlameProtocol(ProtocolInterface):
         """Route an already parsed/reassembled FLAME message by packet type."""
         kind = packet["packet_type"]
         source = packet.get("source_address")
-        if source is not None:
-            neighbor = self.neighbors.get_neighbor(*source)
-            if neighbor is not None and neighbor.association_state != AssociationState.INACTIVE:
-                neighbor.expiration_time = time.time() + self.s["neighbor_timeout_s"]
-
         if kind == PacketType.HELLO:
             # Only a valid, model-compatible HELLO counts as discovery. Preserve
             # the order of FIRST reception, not packet send time or CH IP sorting.
@@ -748,17 +753,27 @@ class FlameProtocol(ProtocolInterface):
             self._record("connection_lost", destination=source,
                          reason="received LEAVE")
             self._joined_ch = None
+            self._next_join = self.node.elapsed()
 
     def _handle_join_accept(self, packet, source):
+        neighbor = self.neighbors.get_neighbor(*source) if source else None
+        if (source != self._join_target or packet["join_id"] != self._join_nonce
+                or neighbor is None):
+            return
+        if packet["rejected"]:
+            self._joined_ch = None
+            self._join_target = None
+            self._discovered_ch.pop(source, None)
+            self._next_join = self.node.elapsed()
+            return
+        # FLAME's NeighborModule has already validated JOIN_ACCEPT.
+        if neighbor.association_state != AssociationState.ASSOCIATED or neighbor.join_id != packet["join_id"]:
+            return
         was_joined = self._is_joined()
-        if (source == self._join_target and packet["rejected"] == 0
-                and not self._is_joined()):
-            # FLAME's NeighborModule has already processed JOIN_ACCEPT.
-            neighbor = self.neighbors.get_neighbor(*source)
-            if neighbor and neighbor.association_state == AssociationState.ASSOCIATED:
-                self._joined_ch = source
-        if not was_joined and self._is_joined():
-            self._joined_ch = source
+        self._joined_ch = source
+        self._join_target = None
+        self._next_join = self.node.elapsed() + neighbor.neighbor_timeout / 2
+        if not was_joined:
             self.sensing = SensingModule(
                 self.acquisition, self.comms, source,
                 sample_buffer_capacity=int(self.capacity_settings["sample"]))
@@ -971,8 +986,8 @@ class FlameProtocol(ProtocolInterface):
             self.fl.handle_message(packet)
             processing_stage = "clive_model_accounting"
             # The team FLAME branch has no last_receive_accepted flag. The
-            # _seen_updates set proves admission to FLAME's aggregation buffer,
-            # NOT validation of tensor compatibility or successful aggregation.
+            # _seen_updates proves validated admission to the aggregation buffer,
+            # but does not prove that aggregation changed the local model.
             # Do not revalidate or manipulate FLAME's buffer here: report the
             # stage accurately, and let FLAME handle its own model processing.
             if seen is not None:
@@ -985,7 +1000,7 @@ class FlameProtocol(ProtocolInterface):
                 self.stats["unique_model_updates_received"] += 1
                 # Backwards-compatible count, now accompanied by an explicit
                 # admission-stage metric so dashboards cannot infer that the
-                # model was mathematically valid or incorporated into weights.
+                # model was already incorporated into the local weights.
                 self.stats["model_updates_buffered_by_flame"] += 1
                 self._record("model_received", source=source,
                              packet_type=int(packet["packet_type"]),
@@ -1116,7 +1131,7 @@ class FlameProtocol(ProtocolInterface):
             "unique_sensor_observations_received": self.stats.get("unique_sensor_observations_received", 0),
             "unique_model_updates_received": self.stats.get("unique_model_updates_received", 0),
             "model_updates_buffered_by_flame": self.stats.get("model_updates_buffered_by_flame", 0),
-            "model_acceptance_stage": "FLAME _seen_updates / aggregation buffer admission; not validated tensor compatibility or aggregation success",
+            "model_acceptance_stage": "FLAME validated aggregation buffer admission; application to local weights reported separately",
             "unique_sensor_payload_bytes_received": self._useful_sensor_bytes,
             "unique_model_payload_bytes_received": self._useful_model_bytes,
             "unique_useful_payload_bytes_received": self._useful_sensor_bytes + self._useful_model_bytes,

@@ -21,8 +21,7 @@ class Aggregation:
     * M_new = M_local + eta * delta_avg
 
     Model state arithmetic is kept generic so the caller can provide scalar,
-    sequence, mapping, or model objects that implement the corresponding
-    arithmetic operators.
+    sequence, mapping, or tensor states matching the local model's schema.
     """
 
     def __init__(
@@ -109,6 +108,9 @@ class Aggregation:
             _scale(average_difference, self.aggregation_learning_rate),
         )
 
+        if not _compatible_state(new_model, local_model):
+            self._buffer.clear()
+            return None
         if _states_equal(new_model, local_model):
             self._buffer.clear()
             return None
@@ -134,10 +136,31 @@ class Aggregation:
         if type(update_id) is not int or not 0 <= update_id <= 0xFF:
             return False
         try:
-            _model_state_from_update(model_update)
-        except (TypeError, ValueError, EOFError, pickle.UnpicklingError):
+            return _compatible_state(
+                _model_state_from_update(model_update),
+                self.model_manager.get_model_state(),
+            )
+        except (TypeError, ValueError, EOFError, RuntimeError, pickle.UnpicklingError):
             return False
-        return True
+
+
+def _compatible_state(received: Any, local: Any) -> bool:
+    """Check the complete model schema and values before admitting an update."""
+    if isinstance(local, Mapping):
+        return (isinstance(received, Mapping) and set(received) == set(local)
+                and all(_compatible_state(received[key], local[key]) for key in local))
+    if _is_sequence(local):
+        return (_is_sequence(received) and len(received) == len(local)
+                and all(_compatible_state(a, b) for a, b in zip(received, local)))
+    if hasattr(local, "shape"):
+        if (type(received) is not type(local) or received.shape != local.shape
+                or received.dtype != local.dtype):
+            return False
+        if hasattr(received, "isfinite"):
+            return bool(received.isfinite().all().item())
+        return all(math.isfinite(value) for value in received.flat)
+    return (isinstance(local, Number) and isinstance(received, Number)
+            and not isinstance(received, bool) and math.isfinite(received))
 
 
 def _model_state_from_update(model_update: Any) -> Any:

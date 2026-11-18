@@ -117,11 +117,15 @@ class CommunicationModule:
         completed_retention: float = 2.0,
         max_retries: int = 3,
         neighbor_module = None,
+        neighbor_timeout: float = 30.0,
     ) -> None:
         if role not in (None, 0, 1):
             raise ValueError("Role must be 0, 1, or None.")
         if not 0 <= version <= 0x0F:
             raise ValueError("Version must fit within 4 bits.")
+        if (isinstance(neighbor_timeout, bool) or not 1 <= neighbor_timeout <= 127
+                or int(neighbor_timeout) != neighbor_timeout):
+            raise ValueError("Neighbor timeout must be an integer from 1 to 127 seconds.")
         if (
             not isinstance(send_buffer_capacity, int)
             or isinstance(send_buffer_capacity, bool)
@@ -149,6 +153,7 @@ class CommunicationModule:
         self.route_handler = route_handler
         self.event_handler = event_handler
         self.neighbor_module = neighbor_module
+        self.neighbor_timeout = int(neighbor_timeout)
         self.reliability_manager = reliability_manager or ReliabilityManager(
             initial_window_size=initial_window_size,
             min_window_size=2,
@@ -631,6 +636,7 @@ class CommunicationModule:
                 port=source_address[1],
                 node_role=node_role,
                 model_id=packet.get("model_id"),
+                neighbor_timeout=self.neighbor_timeout,
             )
 
         elif packet_type == PacketType.JOIN:
@@ -639,6 +645,7 @@ class CommunicationModule:
                 port=source_address[1],
                 join_id=packet["join_id"],
                 model_id=packet.get("model_id"),
+                neighbor_timeout=self.neighbor_timeout,
             )
 
             self.send_message(
@@ -646,7 +653,7 @@ class CommunicationModule:
                     "packet_type": PacketType.JOIN_ACCEPT,
                     "role": 1,
                     "join_id": packet["join_id"],
-                    "timeout": 30,
+                    "timeout": self.neighbor_timeout,
                     "rejected": 0 if accepted else 1,
                 },
                 destination=source_address,
@@ -659,6 +666,7 @@ class CommunicationModule:
                 port=source_address[1],
                 join_id=packet["join_id"],
                 rejected=packet["rejected"],
+                neighbor_timeout=packet["timeout"],
             )
 
         elif packet_type == PacketType.LEAVE:
@@ -747,6 +755,8 @@ class CommunicationModule:
         with self._state_lock:
             result = self.reliability_manager.receive_fragment(source_address, packet)
 
+        if result.accepted or result.duplicate:
+            self._refresh_neighbor_membership(source_address)
         self._emit(
             "fragment_duplicate" if result.duplicate else "fragment_received",
             packet_type=packet["packet_type"],
@@ -875,6 +885,9 @@ class CommunicationModule:
                 received_blocks=packet["received_blocks"],
             )
         self._handle_transmission_action(action)
+
+        if action.reason not in ("unknown_ack", "invalid_ack", "stale_or_wrong_window_ack"):
+            self._refresh_neighbor_membership(source_address)
 
     def _handle_transmission_action(self, action: TransmissionAction) -> None:
         # Handle the result of a reliability transmission action, sending fragments or emitting events as needed.

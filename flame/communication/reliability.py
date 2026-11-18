@@ -90,6 +90,7 @@ class OutboundTransfer:
     loss_in_window: bool = False
     reduced_window_size: Optional[int] = None
     last_ack_signature: Optional[Tuple[int, ...]] = None
+    highest_sent_block: int = -1
 
     @property
     def last_block_number(self) -> int:
@@ -283,6 +284,8 @@ class ReliabilityManager:
     ) -> TransmissionAction:
         now = time.monotonic() if now is None else now
         block_list = list(blocks)
+        if block_list:
+            transfer.highest_sent_block = max(transfer.highest_sent_block, max(block_list))
         transfer.deadline = now + self.ack_timeout
         return TransmissionAction(
             key=transfer.key,
@@ -311,13 +314,21 @@ class ReliabilityManager:
         transfer = self.outbound_transfers.get(key)
         if transfer is None:
             return TransmissionAction(key=key, reason="unknown_ack")
-        if (window_start, window_end) != (transfer.window_start, transfer.window_end):
+        if (window_start != transfer.window_start
+                or not window_start <= window_end <= transfer.last_block_number
+                or window_end - window_start + 1 > transfer.max_window_size):
             return TransmissionAction(key=key, reason="stale_or_wrong_window_ack")
 
         received = tuple(received_blocks)
-        if any(block < window_start or block > window_end for block in received):
+        if any(block < window_start or block > window_end
+               or block > transfer.highest_sent_block for block in received):
             return TransmissionAction(key=key, reason="invalid_ack")
 
+        # A lost ACK can make the two AIMD windows differ. Follow the receiver's
+        # boundary for this same window start, then retransmit any missing blocks.
+        if window_end != transfer.window_end:
+            transfer.window_end = window_end
+            transfer.window_size = window_end - window_start + 1
         signature = (window_start, window_end, *received)
         if signature == transfer.last_ack_signature:
             return TransmissionAction(key=key, reason="duplicate_ack")
