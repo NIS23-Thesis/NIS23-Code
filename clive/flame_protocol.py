@@ -1030,14 +1030,8 @@ class FlameProtocol(ProtocolInterface):
                              trigger_peer=source)
                 self._record_learning("peer_aggregation", peer=source,
                                       peer_update_id=packet.get("update_id"))
-                # Follow the team-owned FLAME module's outbound decisions.
-                # A successful aggregation may queue MODEL_UPDATE; collect it
-                # through the same CLIVE/NodeSocket path used after training.
-                # The FLAME-supplied _exclude_source hint prevents sending the
-                # resulting update directly back to its triggering peer.
-                # Existing in-flight transfers remain owned by FLAME reliability.
-                processing_stage = "clive_model_dispatch"
-                self._collect_model_update()
+                # Peer aggregation changes the local model but cannot trigger
+                # dissemination. Existing sensor-trained transfers may finish.
         except OverflowError as error:
             if "Model update ID cannot exceed 8 bits" not in str(error):
                 self._record("fl_error", reason=str(error))

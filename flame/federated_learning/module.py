@@ -61,12 +61,7 @@ class FederatedLearningModule:
             aggregated_model = self.aggregation.receive_update(message)
             if aggregated_model is not None:
                 self.trainer.set_local_model(aggregated_model)
-                # The thesis specifies opportunistic dissemination after
-                # aggregation. Keep the update buffered until the application
-                # observes a compatible CH and sends it.
-                self._queue_model_update(
-                    exclude_source=message.get("source_address")
-                )
+                # Only training on fresh sensor observations queues an update.
             return aggregated_model
 
         return None

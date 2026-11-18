@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import time
 from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Optional, Tuple
@@ -149,6 +150,13 @@ class ReliabilityManager:
         max_retries: int = DEFAULT_MAX_RETRIES,
     ) -> None:
         # Set up reliable transfer limits and state.
+        for value in (initial_window_size, min_window_size, max_window_size, max_retries):
+            if type(value) is not int:
+                raise ValueError("Window sizes and maximum retries must be integers.")
+        for value in (ack_timeout, ack_delay, reassembly_timeout, completed_retention):
+            if (isinstance(value, bool) or not isinstance(value, (int, float))
+                    or not math.isfinite(value)):
+                raise ValueError("Reliability timers must be finite numbers.")
         if min_window_size < 2:
             raise ValueError("FLAME's minimum window size is 2.")
         if not min_window_size <= initial_window_size <= max_window_size:
